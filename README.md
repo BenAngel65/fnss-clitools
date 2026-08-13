@@ -35,7 +35,19 @@ bash scripts/install.sh
 
 依赖：Python ≥ 3.8，纯 Python wheel，**无 C 扩展**。
 
-依赖：Python ≥ 3.8，纯 Python wheel，**无 C 扩展**。
+## 更新
+
+```bash
+bash scripts/update.sh          # 交互式确认升级
+bash scripts/update.sh --check  # 只检查，不下载安装
+bash scripts/update.sh --yes    # 跳过确认（脚本化调用）
+```
+
+脚本从 GitHub Releases 拉最新源码 tarball，自动检测平台（Termux 用 `--target`，Linux/macOS 用 `--user`），通过 `pip install` 完成升级。
+
+升级成功后：
+- `--user` 安装：重启终端或 `hash -r` 让新 PATH 生效
+- Termux `--target`：直接执行 `oinbox/odiary/onote` 即可
 
 ## 快速开始
 
@@ -241,6 +253,31 @@ oinbox --help
 oinbox 测试任务
 odiary 测试日志
 ```
+
+## 发布 checklist
+
+发布新版本前必须**同步 bump** 所有版本号位置（否则 `update.sh` 会陷入"已是最新"死循环）：
+
+```bash
+# 1. bump 版本号（4 个文件）
+#    pyproject.toml: version = "0.2.1"
+#    clitools/__init__.py: __version__ = "0.2.1"
+#    oinbox/__init__.py
+#    odiary/__init__.py
+#    onote/__init__.py
+$EDITOR pyproject.toml clitools/__init__.py oinbox/__init__.py odiary/__init__.py onote/__init__.py
+
+# 2. commit + tag
+git add -A
+git commit -m "Bump version to 0.2.1"
+git tag v0.2.1
+git push origin main v0.2.1
+
+# 3. 创建 GitHub Release（changelog 用 --generate-notes 自动汇总）
+gh release create v0.2.1 --generate-notes --title "v0.2.1"
+```
+
+`update.sh` 从 `https://api.github.com/repos/BenAngel65/fnss-clitools/releases/latest` 读取最新版本，无需上传额外 artifact。
 
 ## 许可
 
