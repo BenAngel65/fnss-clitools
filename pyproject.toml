@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fnss-clitools"
+version = "0.2.0"
+description = "Offline-first CLI tools for fast-note-sync-service (fnss): oinbox + odiary"
+readme = "README.md"
+requires-python = ">=3.8"
+license = { text = "MIT" }
+authors = [{ name = "fnss-clitools contributors" }]
+keywords = ["inbox", "diary", "fnss", "obsidian", "termux", "offline", "cli"]
+classifiers = [
+    "Environment :: Console",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: Android",
+    "Programming Language :: Python :: 3",
+    "Topic :: Utilities",
+]
+dependencies = [
+    "requests>=2.28",
+    "rich>=13.0",
+    "platformdirs>=3.0",
+]
+
+[project.scripts]
+oinbox = "oinbox.cli:main"
+odiary = "odiary.cli:main"
+onote = "onote.cli:main"
+
+[tool.setuptools]
+packages = ["clitools", "oinbox", "odiary", "onote"]
+
+[tool.setuptools.package-data]
+"clitools" = ["py.typed"]
+"oinbox" = ["py.typed"]
+"odiary" = ["py.typed"]
