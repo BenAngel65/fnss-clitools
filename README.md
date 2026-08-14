@@ -105,7 +105,9 @@ odiary sync
 **每次写入自动归一化**：与 QuickAdd、Obsidian 等插件混用同一文件时容易累积多余空行。`odiary` 写入本地缓存与服务端前会执行：
 
 1. 折叠 3+ 个连续换行为 2 个（相邻 entry 之间最多 1 个 blank line）
-2. 去掉尾部空白，确保文件以**单个** `\n` 结尾（POSIX），最后一行永远是日记内容
+2. 去掉尾部所有空白（含末尾 `\n`），文件以**最后一条 entry 的内容**结尾，**没有**末尾换行
+
+> ⚠️ 这与 POSIX "文件以 `\n` 结尾" 的惯例冲突。`odiary` 故意这么做，因为其他常见插件（QuickAdd 等）假设文件末尾无 `\n`，混用时不会累积多余空行。
 
 这样 `odiary add/edit/sync` 之后服务端永远是干净格式。Obsidian 下次 sync 拉取就会得到清理后的内容（`odiary` 不直接修改 Obsidian 本地 vault）。
 

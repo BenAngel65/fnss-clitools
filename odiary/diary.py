@@ -31,26 +31,30 @@ def read_local(remote_path: str) -> Optional[str]:
 def _normalize(content: str) -> str:
     """Normalize content so cross-tool writes don't accumulate blank lines.
 
-    - Collapse 3+ consecutive newlines down to 2 (max one blank line).
-    - Strip trailing whitespace, then end with exactly one trailing newline (POSIX).
+    - Collapse 3+ consecutive newlines down to 2 (max one blank line between
+      entries).
+    - Strip ALL trailing whitespace (including any final newline).
 
-    Handles mixed writes from odiary + plugins (e.g. QuickAdd) that assume
-    no trailing newline. After this, every entry block has exactly:
+    Deliberately deviates from POSIX "files end with newline": the file
+    ends with the last entry's content, no trailing newline. This matches
+    what other plugins (QuickAdd-style) assume, so mixed writes don't
+    accumulate stray blank lines.
+
+    Result format:
         entry\\n
         \\n                       <- one blank line separator
-        next_entry\\n
-    and the file ends with the last entry (no trailing blank line).
+        next_entry                 <- file ends here, NO trailing \\n
     """
     content = _MULTI_NEWLINE_RE.sub("\n\n", content)
-    content = content.rstrip() + "\n"
+    content = content.rstrip()
     return content
 
 
 def write_local(remote_path: str, content: str) -> Path:
-    """Write content to local cache after normalization.
+    """Write normalized content to local cache.
 
-    Normalization (collapse multi-blank lines + trim trailing whitespace) is
-    idempotent and safe to apply on every write.
+    Idempotent: collapse multi-blank lines and strip trailing whitespace.
+    The file ends with the last entry's content (no trailing newline).
     """
     p = diary_local_path(remote_path)
     p.parent.mkdir(parents=True, exist_ok=True)
