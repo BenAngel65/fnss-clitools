@@ -636,6 +636,75 @@ def main():
         cfg["editor"] = ""
         cfg_mod.save_config(cfg)
 
+        # === Scenario 20: write_local 归一化（多空行折叠 + 文件末尾无空） ===
+        from odiary.diary import _normalize, write_local, diary_local_path
+
+        # a) 三连换行 → 双换行（单空行）
+        in_str = "prev_entry\n\n\nnext_entry"
+        assert _normalize(in_str) == "prev_entry\n\nnext_entry\n", \
+            f"三连换行应该折叠为双换行, got: {_normalize(in_str)!r}"
+        # b) 五连换行 → 双换行
+        in_str = "a\n\n\n\n\nb"
+        assert _normalize(in_str) == "a\n\nb\n"
+        # c) 末尾多个空白 → 单一 \n
+        assert _normalize("a\n\n\n") == "a\n", "trailing whitespace should be collapsed to one \\n"
+        # d) 文件末尾无换行 → 加一个
+        assert _normalize("foo") == "foo\n"
+        # e) 单个正常 \n 不变
+        assert _normalize("a\nb\n") == "a\nb\n"
+        print(f"✓ 场景 20a: _normalize() 单元测试")
+
+        # f) 端到端：seed 内容有双空行 + 末尾空行，odiary add 后应该规范
+        reset(tmp, state, today)
+        # Seed 模拟 QuickAdd 风格的脏格式：双空行 + 末尾空行
+        dirty_content = (
+            "# Logs\n"
+            "\n"
+            "- ⌚08:00 旧条目1\n"
+            "\n"
+            "\n"          # 双空行 (QuickAdd 风格)
+            "- ⌚09:00 旧条目2\n"
+            "\n"
+            "\n"          # 末尾双空行
+        )
+        state.files[f"{DIARY_DIR}/{today}.md"] = dirty_content
+
+        # 直接调 write_local 触发归一化
+        path = diary_local_path(f"{DIARY_DIR}/{today}.md")
+        # write_local 接受完整 content，但 seed_diary 只设 server state
+        # 我们手动写本地并模拟一次 add 操作
+        write_local(f"{DIARY_DIR}/{today}.md", dirty_content)
+        normalized = path.read_text(encoding="utf-8")
+
+        # 验证：3+ 换行被折叠成 2
+        assert "\n\n\n" not in normalized, f"不应有 3+ 连续换行, got: {normalized!r}"
+        # 验证：文件末尾只有 1 个 \n
+        assert normalized.endswith("\n"), f"文件末尾应有 \\n, got: {normalized!r}"
+        assert not normalized.endswith("\n\n"), f"文件末尾不应有空行, got: {normalized!r}"
+        # 验证：原内容正确保留
+        assert "- ⌚08:00 旧条目1" in normalized
+        assert "- ⌚09:00 旧条目2" in normalized
+        print(f"✓ 场景 20b: write_local 归一化（QuickAdd 风格脏格式 → 单空行）")
+
+        # g) 端到端 add：先写脏格式，再 odiary add 新条目，验证结果干净
+        reset(tmp, state, today)
+        # Server (remote) 也是脏格式
+        state.files[f"{DIARY_DIR}/{today}.md"] = dirty_content
+
+        rc = odiary_cli.main(["归一化测试条目"])
+        assert rc == 0
+
+        # 检查 server 状态（被 odiary 推送规范化后的版本）
+        server_content = state.files[f"{DIARY_DIR}/{today}.md"]
+        assert "\n\n\n" not in server_content, \
+            f"推送后不应有 3+ 换行: {server_content!r}"
+        assert server_content.endswith("\n")
+        assert not server_content.endswith("\n\n")
+        assert "- ⌚08:00 旧条目1" in server_content
+        assert "- ⌚09:00 旧条目2" in server_content
+        assert "归一化测试条目" in server_content
+        print(f"✓ 场景 20c: odiary add 后服务端内容已归一化（无 3+ 换行、无末尾空行）")
+
         print()
         print("=" * 60)
         print("✅ odiary 所有集成测试通过！")

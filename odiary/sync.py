@@ -157,10 +157,10 @@ def add_log(text: str, date_str: str) -> int:
         # Idempotency: if entry already in latest, skip push
         if entry.strip() in latest:
             render_info("已存在，跳过同步")
-            # Still update local cache to latest
-            diary_ops.write_local(remote_path, latest)
+            # Still update local cache to latest (normalized)
+            diary_ops.write_local(remote_path, diary_ops._normalize(latest))
             return 0
-        merged = diary_ops.insert_log_entry(latest, timestamp, text)
+        merged = diary_ops._normalize(diary_ops.insert_log_entry(latest, timestamp, text))
         client.write_note(cfg["vault"], remote_path, merged)
         diary_ops.write_local(remote_path, merged)
         render_success("已同步到 fnss")
@@ -327,7 +327,7 @@ def edit_log(date_str: Optional[str]) -> int:
             render_info("已存在，跳过同步")
             diary_ops.write_local(remote_path, latest)
             return 0
-        merged = latest.rstrip() + "\n\n" + entry
+        merged = diary_ops._normalize(latest.rstrip() + "\n\n" + entry + "\n")
         client.write_note(cfg["vault"], remote_path, merged)
         diary_ops.write_local(remote_path, merged)
         render_success("已同步到 fnss")
@@ -374,6 +374,7 @@ def push_pending(client: FnssClient) -> int:
                 # instead of re-running insert_log_entry (which would duplicate
                 # the timestamp prefix).
                 content = content.rstrip() + "\n\n" + entry.rstrip() + "\n"
+            content = diary_ops._normalize(content)
             client.write_note(cfg["vault"], remote_path, content)
             diary_ops.write_local(remote_path, content)
             total_pushed += len(entries)

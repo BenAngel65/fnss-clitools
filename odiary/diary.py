@@ -9,10 +9,11 @@ from clitools.config import diary_data_dir
 
 
 _LOGS_HEADING_RE = re.compile(r"^#\s+Logs\s*$", re.MULTILINE)
+_MULTI_NEWLINE_RE = re.compile(r"\n{3,}")
 
 
 def diary_local_path(remote_path: str) -> Path:
-    """Map a remote note path to its local cache path.
+    """Map a remote note path to its local cache file.
 
     e.g. "Logs/Diary/2026-08-12.md" -> ~/.local/share/fnss-clitools/diary/Logs/Diary/2026-08-12.md
     """
@@ -27,12 +28,33 @@ def read_local(remote_path: str) -> Optional[str]:
     return p.read_text(encoding="utf-8")
 
 
+def _normalize(content: str) -> str:
+    """Normalize content so cross-tool writes don't accumulate blank lines.
+
+    - Collapse 3+ consecutive newlines down to 2 (max one blank line).
+    - Strip trailing whitespace, then end with exactly one trailing newline (POSIX).
+
+    Handles mixed writes from odiary + plugins (e.g. QuickAdd) that assume
+    no trailing newline. After this, every entry block has exactly:
+        entry\\n
+        \\n                       <- one blank line separator
+        next_entry\\n
+    and the file ends with the last entry (no trailing blank line).
+    """
+    content = _MULTI_NEWLINE_RE.sub("\n\n", content)
+    content = content.rstrip() + "\n"
+    return content
+
+
 def write_local(remote_path: str, content: str) -> Path:
+    """Write content to local cache after normalization.
+
+    Normalization (collapse multi-blank lines + trim trailing whitespace) is
+    idempotent and safe to apply on every write.
+    """
     p = diary_local_path(remote_path)
     p.parent.mkdir(parents=True, exist_ok=True)
-    if not content.endswith("\n"):
-        content += "\n"
-    p.write_text(content, encoding="utf-8")
+    p.write_text(_normalize(content), encoding="utf-8")
     return p
 
 

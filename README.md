@@ -102,6 +102,13 @@ odiary sync
 
 > Obsidian 会把 `- ⌚HH:MM` 渲染为 bulleted list item（这是 Markdown 标准行为）。如果觉得「list」结构不好，避免在 entry body 里用 `1.` `2.` 这种 ordered list 起始符，否则会变成嵌套结构。
 
+**每次写入自动归一化**：与 QuickAdd、Obsidian 等插件混用同一文件时容易累积多余空行。`odiary` 写入本地缓存与服务端前会执行：
+
+1. 折叠 3+ 个连续换行为 2 个（相邻 entry 之间最多 1 个 blank line）
+2. 去掉尾部空白，确保文件以**单个** `\n` 结尾（POSIX），最后一行永远是日记内容
+
+这样 `odiary add/edit/sync` 之后服务端永远是干净格式。Obsidian 下次 sync 拉取就会得到清理后的内容（`odiary` 不直接修改 Obsidian 本地 vault）。
+
 `odiary edit` 适用场景：写多行、列表、段落。打开 vim/nvim，初始内容是 `- ⌚HH:MM `（当前时间），用户编辑后整段内容作为一条 entry 追加。
 
 格式保证：
