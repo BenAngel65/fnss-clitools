@@ -53,6 +53,7 @@ def load_pending() -> list[dict]:
 
 def save_pending(items: list[dict]) -> None:
     p = pending_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
     if not items:
         if p.exists():
             p.unlink()
@@ -419,13 +420,22 @@ def delete_note(ref: str, confirm: bool = True) -> int:
 
 
 def manual_sync() -> int:
-    """Push pending + reconcile orphaned local notes."""
-    client = make_client()
-    if client is None:
+    """Push pending + reconcile orphaned local notes. Reports clearly when offline."""
+    if not is_configured():
         render_error("未配置 fnss 凭证，运行 `onote config` 设置")
         return 1
+    pending_items = load_pending()
     cfg = load_config()
     vault = cfg["vault"]
+
+    if not pending_items and not _local_cache_exists():
+        render_info("没有待同步项")
+        return 0
+
+    client = make_client()
+    if client is None:
+        render_error("无法创建客户端")
+        return 1
 
     pushed, errs = push_pending(client)
     for e in errs:
@@ -435,12 +445,24 @@ def manual_sync() -> int:
     for e in rec_errs:
         render_warning(f"本地恢复失败：{e}")
 
-    total = pushed + rec_pushed
-    if total:
-        render_success(f"已推送 {pushed} 条待同步项 + 恢复 {rec_pushed} 个本地孤儿")
+    if pushed or rec_pushed:
+        render_success(
+            f"已推送 {pushed} 条待同步项 + 恢复 {rec_pushed} 个本地孤儿"
+        )
     else:
-        render_info("没有待同步项")
+        if pending_items:
+            render_warning(
+                f"推送失败：{len(pending_items)} 条仍待同步，请检查网络或服务后重试"
+            )
+        else:
+            render_info("没有待同步项")
     return 0
+
+
+def _local_cache_exists() -> bool:
+    """True if there are any local notes in the cache dir (orphans to reconcile)."""
+    notes_dir = note_ops.notes_data_dir() / load_config().get("notes_dir", "")
+    return notes_dir.exists() and any(notes_dir.rglob("*.md"))
 
 
 # ---------- internal ----------

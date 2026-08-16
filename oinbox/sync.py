@@ -196,12 +196,17 @@ def push_pending(client: FnssClient) -> int:
 
 
 def manual_sync() -> int:
-    """Trigger a full sync (pull + push)."""
-    client = make_client()
-    if client is None:
+    """Pull latest content from fnss + push pending entries."""
+    if not is_configured():
         render_error("未配置 fnss 凭证，运行 `oinbox config` 设置")
         return 1
+    pending_items = _load_pending()
+    client = make_client()
+    if client is None:
+        render_error("无法创建客户端")
+        return 1
     cfg = load_config()
+    pull_failed = False
     try:
         remote = client.get_note(cfg["vault"], cfg["inbox_path"])
         if remote is None:
@@ -211,12 +216,27 @@ def manual_sync() -> int:
         else:
             write_local(remote.get("content", ""))
             render_success("已拉取最新内容")
-        pushed = push_pending(client)
-        if pushed:
-            render_success(f"推送了 {pushed} 条待同步项")
-        else:
-            render_info("没有待同步项")
-        return 0
     except FnssError as e:
-        render_error(f"同步失败：{e}")
-        return 1
+        pull_failed = True
+        render_warning(f"拉取失败：{e}")
+
+    if not pending_items:
+        render_info("没有待同步项")
+        return 0
+
+    # We have pending items; attempt to push.
+    if pull_failed:
+        # Skip push if pull failed (likely offline) to avoid wasting time
+        render_warning(
+            f"跳过推送：{len(pending_items)} 条仍待同步，请检查网络后重试"
+        )
+        return 0
+
+    pushed = push_pending(client)
+    if pushed:
+        render_success(f"已推送 {pushed} 条")
+    else:
+        render_warning(
+            f"推送失败：{len(pending_items)} 条仍待同步，请检查网络或服务后重试"
+        )
+    return 0

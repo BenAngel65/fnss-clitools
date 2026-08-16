@@ -2,15 +2,17 @@
 # fnss-clitools 自更新脚本
 # 从 GitHub 拉取最新 release tag 的源码 tarball 并通过 pip 安装。
 #
+# 推荐安装位置: ~/.local/bin/fnssclitools-update (在 PATH 中)
+# 这样调用:   fnssclitools-update
+#
 # 用法:
-#   bash scripts/update.sh          # 交互式确认
-#   bash scripts/update.sh --yes    # 跳过确认
-#   bash scripts/update.sh --check  # 只检查，不下载安装
+#   fnssclitools-update          # 交互式确认
+#   fnssclitools-update --yes    # 跳过确认
+#   fnssclitools-update --check  # 只检查，不下载安装
 #
 # 要求:
 #   - python3 (>= 3.8) 在 PATH
 #   - pip 可用
-#   - jq 可选（脚本会自己 fallback 到 python3 解析 JSON）
 #
 # 平台:
 #   - Linux/macOS: pip install --user

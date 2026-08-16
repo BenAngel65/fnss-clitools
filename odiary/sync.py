@@ -390,14 +390,25 @@ def push_pending(client: FnssClient) -> int:
 
 
 def manual_sync() -> int:
-    """Pull all pending dates? No — pull is on-demand per date. Sync = push pending."""
+    """Push pending entries to fnss. Reports clearly when offline."""
+    if not is_configured():
+        render_error("未配置 fnss 凭证，运行 `onote config` 设置")
+        return 1
+    pending_items = load_pending()
+    if not pending_items:
+        render_info("没有待同步项")
+        return 0
+
     client = make_client()
     if client is None:
-        render_error("未配置 fnss 凭证，运行 `oinbox config` 设置")
+        render_error("无法创建客户端")
         return 1
+
     pushed = push_pending(client)
     if pushed:
-        render_success(f"推送了 {pushed} 条待同步项")
+        render_success(f"已推送 {pushed} 条")
     else:
-        render_info("没有待同步项")
+        render_warning(
+            f"推送失败：{len(pending_items)} 条仍待同步，请检查网络或服务后重试"
+        )
     return 0

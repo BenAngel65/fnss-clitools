@@ -12,8 +12,9 @@
 | `oinbox` | 任务收件箱 — 追加 / 查询 `INBOX.md` |
 | `odiary` | 日记 Logs — 按日期追加 / 查询每日 `# Logs` 段（支持编辑器模式） |
 | `onote` | 笔记 CRUD — 搜索 / 编辑 / 删除（vim/nvim 驱动） |
+| `fnsssync` | **统一同步命令**：一次推完 oinbox + odiary + onote 三个模块的离线 pending |
 
-三个工具共享同一份配置（host / token / vault）。
+四个工具共享同一份配置（host / token / vault）。
 
 ## 安装
 
@@ -38,16 +39,21 @@ bash scripts/install.sh
 ## 更新
 
 ```bash
-bash scripts/update.sh          # 交互式确认升级
-bash scripts/update.sh --check  # 只检查，不下载安装
-bash scripts/update.sh --yes    # 跳过确认（脚本化调用）
+fnssclitools-update          # 交互式确认升级（已安装在 ~/.local/bin）
+fnssclitools-update --check  # 只检查，不下载安装
+fnssclitools-update --yes    # 跳过确认（脚本化调用）
+
+# 或从源码：
+bash scripts/fnssclitools-update.sh          # 交互式
+bash scripts/fnssclitools-update.sh --check  # 只检查
+bash scripts/fnssclitools-update.sh --yes    # 跳过确认
 ```
 
 脚本从 GitHub Releases 拉最新源码 tarball，自动检测平台（Termux 用 `--target`，Linux/macOS 用 `--user`），通过 `pip install` 完成升级。
 
 升级成功后：
 - `--user` 安装：重启终端或 `hash -r` 让新 PATH 生效
-- Termux `--target`：直接执行 `oinbox/odiary/onote` 即可
+- Termux `--target`：直接执行 `oinbox/odiary/onote/fnsssync` 即可
 
 ## 快速开始
 
@@ -79,7 +85,7 @@ odiary sync
 | `oinbox <文本...>` | 追加任务，自动同步 |
 | `oinbox list` / `oinbox ls` | 拉取远端 + 渲染本地 |
 | `oinbox add <文本...>` | 同上但显式 |
-| `oinbox sync` | 拉取 + 推送 pending |
+| `oinbox sync` | 拉取 + 推送 pending（建议直接用 `fnsssync`） |
 | `oinbox config` | 配置 / 查看 |
 
 `oinbox` 写入格式：`- [ ] <内容>`（无时间戳，保持简洁）。
@@ -95,7 +101,7 @@ odiary sync
 | `odiary add <文本...>` | 同上但显式 |
 | `odiary edit` | 编辑器模式：写大段文字，自动加时间戳前缀 |
 | `odiary edit <日期>` | 编辑指定日期（编辑器模式） |
-| `odiary sync` | 推送 pending |
+| `odiary sync` | 推送 odiary pending（建议直接用 `fnsssync`） |
 | `odiary config` | 配置 / 查看 |
 
 `odiary add` 写入格式：`- ⌚HH:MM <内容>`，自动追加在日记文件 `# Logs` 段末尾。
@@ -138,8 +144,26 @@ odiary sync
 | `onote delete <编号\|路径>` | 删除（默认二次确认；`--yes` 跳过；硬删） |
 | `onote search <query>` | 路径/title 搜索（默认） |
 | `onote search -c <query>` | 内容搜索 |
-| `onote sync` | 推送 pending 队列 |
+| `onote sync` | 推送 pending 队列（建议直接用 `fnsssync`） |
 | `onote config` | 配置（含 `--notes-dir`） |
+
+### `fnsssync` — 统一同步
+
+```bash
+fnsssync
+```
+
+离线时各模块的 `add` / `edit` / `delete` 会把变更缓存到各自 `pending.json`。`fnsssync` 一次推完 oinbox + odiary + onote 三个模块的所有 pending。
+
+**关键场景**：断网 → 各模块离线 add → 恢复网络 → `fnsssync` → 全部推送成功。
+
+退出码：
+- `0` 全部成功（或无 pending）
+- `1` 未配置凭证
+- `2` 客户端创建失败
+- `3` 至少一个模块有 fatal error
+
+各模块单独的 `sync` 子命令（`oinbox sync`、`odiary sync`、`onote sync`）仍保留，只同步对应模块。如果只想推一个模块的 pending，可以用它们。
 
 **编辑器优先级**：`$ONOTE_EDITOR` > `$EDITOR` > `nvim` > `vim` > 自动安装（apt/dnf/pacman/apk/brew/pkg）> 报错。
 
@@ -265,7 +289,7 @@ odiary 测试日志
 
 ## 发布 checklist
 
-发布新版本前必须**同步 bump** 所有版本号位置（否则 `update.sh` 会陷入"已是最新"死循环）：
+发布新版本前必须**同步 bump** 所有版本号位置（否则 `fnssclitools-update` 会陷入"已是最新"死循环）：
 
 ```bash
 # 1. bump 版本号（4 个文件）
@@ -286,7 +310,7 @@ git push origin main v0.2.1
 gh release create v0.2.1 --generate-notes --title "v0.2.1"
 ```
 
-`update.sh` 从 `https://api.github.com/repos/BenAngel65/fnss-clitools/releases/latest` 读取最新版本，无需上传额外 artifact。
+`fnssclitools-update` 从 `https://api.github.com/repos/BenAngel65/fnss-clitools/releases/latest` 读取最新版本，无需上传额外 artifact。
 
 ## 许可
 

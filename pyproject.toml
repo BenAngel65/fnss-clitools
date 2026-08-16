@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "fnss-clitools"
-version = "0.2.2"
+version = "0.2.3"
 description = "Offline-first CLI tools for fast-note-sync-service (fnss): oinbox + odiary"
 readme = "README.md"
 requires-python = ">=3.8"
@@ -30,6 +30,7 @@ dependencies = [
 oinbox = "oinbox.cli:main"
 odiary = "odiary.cli:main"
 onote = "onote.cli:main"
+fnsssync = "clitools.fnsssync:main"
 
 [tool.setuptools]
 packages = ["clitools", "oinbox", "odiary", "onote"]
