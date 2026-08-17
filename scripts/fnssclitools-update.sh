@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# Termux 设备上 /usr/bin/env 不存在，会用 shebang 失败。Termux 用户可手动
+# 改成 #!/data/data/com.termux/files/usr/bin/bash
+#
 # fnss-clitools 自更新脚本
 # 从 GitHub 拉取最新 release tag 的源码 tarball 并通过 pip 安装。
 #

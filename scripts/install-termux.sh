@@ -48,6 +48,17 @@ else
     echo "→ PATH 已包含 .local/bin，跳过"
 fi
 
+echo "==> 修复 Termux 专用 shebang..."
+# Termux 设备上 /usr/bin/env 不存在（或指向 toybox），导致依赖 env 解析的
+# shebang 失败。把已安装脚本的 shebang 改成 Termux 专属绝对路径。
+if [ -f "$HOME/.local/bin/fnssclitools-update" ]; then
+    TERMUX_BASH="/data/data/com.termux/files/usr/bin/bash"
+    if [ -x "$TERMUX_BASH" ]; then
+        sed -i "1s|.*|#!$TERMUX_BASH|" "$HOME/.local/bin/fnssclitools-update" 2>/dev/null || true
+        echo "✓ fnssclitools-update shebang 已改为 Termux 路径"
+    fi
+fi
+
 echo ""
 echo "============================================"
 echo "  fnss-clitools 安装完成！"

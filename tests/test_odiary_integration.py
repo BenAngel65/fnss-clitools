@@ -609,28 +609,43 @@ def main():
         cfg_mod.save_config(cfg)
         from clitools.editor import ensure_editor, EditorConfigError
         import shutil
-        if shutil.which("vim"):
-            ed = ensure_editor(env_vars=("ODIARY_EDITOR", "EDITOR"), config_editor="vim")
-            assert ed == "vim", f"config editor=vim should yield 'vim', got {ed!r}"
-            print(f"✓ 场景 19a: config editor=vim → ensure_editor 返回 vim")
-        else:
-            try:
-                ensure_editor(env_vars=("ODIARY_EDITOR", "EDITOR"), config_editor="vim")
-                assert False, "should have raised EditorConfigError"
-            except EditorConfigError as e:
-                assert "vim" in str(e)
-                print(f"✓ 场景 19b: config editor=vim 但 vim 未装 → EditorConfigError")
+        import os as _os
+        # Save and unset env vars so config_editor is the only source
+        saved_edi = _os.environ.pop("EDITOR", None)
+        saved_ode = _os.environ.pop("ODIARY_EDITOR", None)
+        try:
+            if shutil.which("vim"):
+                ed = ensure_editor(env_vars=("ODIARY_EDITOR", "EDITOR"), config_editor="vim")
+                assert ed == "vim", f"config editor=vim should yield 'vim', got {ed!r}"
+                print(f"✓ 场景 19a: config editor=vim → ensure_editor 返回 vim")
+            else:
+                try:
+                    ensure_editor(env_vars=("ODIARY_EDITOR", "EDITOR"), config_editor="vim")
+                    assert False, "should have raised EditorConfigError"
+                except EditorConfigError as e:
+                    assert "vim" in str(e)
+                    print(f"✓ 场景 19b: config editor=vim 但 vim 未装 → EditorConfigError")
+        finally:
+            if saved_edi is not None: _os.environ["EDITOR"] = saved_edi
+            if saved_ode is not None: _os.environ["ODIARY_EDITOR"] = saved_ode
 
         # === Scenario 20: editor config = nonexistent → EditorConfigError ===
         cfg = _lc()
         cfg["editor"] = "definitely-not-a-real-editor-xyz"
         cfg_mod.save_config(cfg)
+        # Unset env vars so config_editor is the only source
+        saved_edi_20 = _os.environ.pop("EDITOR", None)
+        saved_ode_20 = _os.environ.pop("ODIARY_EDITOR", None)
         try:
-            ensure_editor(env_vars=("ODIARY_EDITOR", "EDITOR"), config_editor="definitely-not-a-real-editor-xyz")
-            assert False, "should have raised EditorConfigError"
-        except EditorConfigError as e:
-            assert "definitely-not-a-real-editor-xyz" in str(e)
-            print(f"✓ 场景 20: config editor=不存在的命令 → EditorConfigError")
+            try:
+                ensure_editor(env_vars=("ODIARY_EDITOR", "EDITOR"), config_editor="definitely-not-a-real-editor-xyz")
+                assert False, "should have raised EditorConfigError"
+            except EditorConfigError as e:
+                assert "definitely-not-a-real-editor-xyz" in str(e)
+                print(f"✓ 场景 20: config editor=不存在的命令 → EditorConfigError")
+        finally:
+            if saved_edi_20 is not None: _os.environ["EDITOR"] = saved_edi_20
+            if saved_ode_20 is not None: _os.environ["ODIARY_EDITOR"] = saved_ode_20
 
         # Restore default
         cfg["editor"] = ""
