@@ -115,13 +115,17 @@ fi
 echo "==> 使用 Python: $PY_CMD ($("$PY_CMD" -V 2>&1 | awk '{print $2}'))"
 
 # ---------- 4. 确保用户 bin 目录存在 ----------
+# pipx 默认把命令装到 ~/.local/bin（Linux/macOS 都一样）。
+# pip --user 则装到 ~/.local/bin (Linux) 或 ~/Library/Python/X.Y/bin (macOS)。
+# 安装完成后根据实际安装方式确定 USER_BIN，确保 update 命令和 CLI 命令在同一目录。
+# 这里先创建一个临时变量供 pipx 安装阶段刷新 PATH 用，最终 USER_BIN 在安装完成后确定。
 if [ "$OS_FAMILY" = "linux" ]; then
-  USER_BIN="$HOME/.local/bin"
+  USER_BIN_FALLBACK="$HOME/.local/bin"
 else
   PY_MINOR="$("$PY_CMD" -c 'import sys;print("%d.%d"%sys.version_info[:2])')"
-  USER_BIN="$HOME/Library/Python/$PY_MINOR/bin"
+  USER_BIN_FALLBACK="$HOME/Library/Python/$PY_MINOR/bin"
 fi
-mkdir -p "$USER_BIN"
+mkdir -p "$USER_BIN_FALLBACK"
 
 # ---------- 4.5 检测并安装 pipx（PEP 668 兼容方式） ----------
 # 现代发行版（Debian 12+, Ubuntu 23.04+, Fedora 38+ 等）默认禁止系统级 pip install。
@@ -183,7 +187,7 @@ if [ "$have_pipx" = "0" ]; then
         ;;
     esac
     # 刷新 PATH — pip install --user 装的 pipx 可能在 $USER_BIN
-    export PATH="$USER_BIN:$PATH"
+    export PATH="$USER_BIN_FALLBACK:$PATH"
     # 重新检测：必须 "$PY_CMD" -m pipx 真正可用
     if "$PY_CMD" -m pipx --version >/dev/null 2>&1; then
         have_pipx=1
@@ -270,6 +274,22 @@ if [ "$install_ok" = "0" ]; then
 fi
 echo "✓ fnss-clitools 安装成功"
 
+# ---------- 6.5 确定最终 USER_BIN —— 与 CLI 命令在同一目录 ----------
+# pipx 默认装到 ~/.local/bin，pip --user 在 macOS 装到 ~/Library/Python/X.Y/bin。
+# 直接查 oinbox 实际路径，确定命令安装目录。
+INSTALLED_BIN="$(command -v oinbox 2>/dev/null || true)"
+if [ -n "$INSTALLED_BIN" ]; then
+    USER_BIN="$(dirname "$INSTALLED_BIN")"
+else
+    # fallback：检测 pipx 和 pip --user 各自的默认路径
+    if [ "$have_pipx" = "1" ]; then
+        USER_BIN="$HOME/.local/bin"
+    else
+        USER_BIN="$USER_BIN_FALLBACK"
+    fi
+fi
+mkdir -p "$USER_BIN"
+
 # ---------- 7. 配置 PATH ----------
 # 确保用户 bin 目录在 PATH 中
 SHELL_RC=""
@@ -289,6 +309,9 @@ if [ -n "$SHELL_RC" ] && ! grep -qF "$PATH_MARKER" "$SHELL_RC"; then
 else
   echo "→ PATH 已包含 $PATH_MARKER 或未找到 shell rc，跳过"
 fi
+
+# 刷新当前 PATH，确保 update 命令装好后能被找到
+export PATH="$USER_BIN:$PATH"
 
 echo "==> 安装 fnssclitools-update 自更新命令..."
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
