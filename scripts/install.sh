@@ -123,15 +123,24 @@ else
 fi
 mkdir -p "$USER_BIN"
 
-# ---------- 4.5 检测 pipx（PEP 668 兼容方式） ----------
+# ---------- 4.5 检测并安装 pipx（PEP 668 兼容方式） ----------
 # 现代发行版（Debian 12+, Ubuntu 23.04+, Fedora 38+ 等）默认禁止系统级 pip install。
 # 改用 pipx，把每个 CLI 工具装在独立的 venv 里，不污染系统。
 # Fallback: pip install --user（必要时加 --break-system-packages，仅 Debian 系打补丁）。
+#
+# 关键：仅当 "$PY_CMD" -m pipx 真正能跑才算 have_pipx=1。
+# PATH 里的 pipx 二进制可能属于别的 Python，与当前 $PY_CMD 不匹配。
 have_pipx=0
-if command -v pipx >/dev/null 2>&1; then
+if "$PY_CMD" -m pipx --version >/dev/null 2>&1; then
     have_pipx=1
-elif "$PY_CMD" -m pipx --version >/dev/null 2>&1; then
-    have_pipx=1
+fi
+
+# pipx 的实际调用方式：优先 $PY_CMD -m pipx，否则 PATH 里的 pipx
+if [ "$have_pipx" = "1" ]; then
+    PIPX_CMD=("$PY_CMD" -m pipx)
+else
+    # 保留一个 fallback（仅用于 have_pipx=1 时，但此处 have_pipx=0）
+    PIPX_CMD=(pipx)
 fi
 
 if [ "$have_pipx" = "0" ]; then
@@ -175,8 +184,10 @@ if [ "$have_pipx" = "0" ]; then
     esac
     # 刷新 PATH — pip install --user 装的 pipx 可能在 $USER_BIN
     export PATH="$USER_BIN:$PATH"
-    if command -v pipx >/dev/null 2>&1 || "$PY_CMD" -m pipx --version >/dev/null 2>&1; then
+    # 重新检测：必须 "$PY_CMD" -m pipx 真正可用
+    if "$PY_CMD" -m pipx --version >/dev/null 2>&1; then
         have_pipx=1
+        PIPX_CMD=("$PY_CMD" -m pipx)
         echo "✓ pipx 已安装"
     else
         echo "→ pipx 装不上，将用 pip --user 方式安装"
@@ -197,7 +208,7 @@ pip_install() { :; }  # placeholder kept for compat; no longer used
 # ---------- 5. 升级 pip / pipx ----------
 if [ "$have_pipx" = "1" ]; then
     echo "==> 升级 pipx..."
-    "$PY_CMD" -m pipx upgrade pipx 2>/dev/null || true
+    "${PIPX_CMD[@]}" upgrade pipx 2>/dev/null || true
 else
     echo "==> 升级 pip..."
     "$PY_CMD" -m pip install --upgrade pip --user $PIP_BREAK --quiet 2>/dev/null || true
@@ -209,16 +220,29 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 
 install_ok=0
-# 优先 PyPI（pipx 或 pip 都行）
+
+# --- helper: 用 pip --user 安装（自动加 --break-system-packages 如果支持）---
+pip_user_install() {
+    if [ -n "$PIP_BREAK" ]; then
+        "$PY_CMD" -m pip install --user $PIP_BREAK "$@"
+    else
+        "$PY_CMD" -m pip install --user "$@"
+    fi
+}
+
+# 优先 PyPI
 if [ "$have_pipx" = "1" ]; then
-    if "$PY_CMD" -m pipx install fnss-clitools; then
+    if "${PIPX_CMD[@]}" install fnss-clitools; then
         install_ok=1
+    else
+        echo "→ pipx install 失败，尝试 pip --user 方式..."
+        if pip_user_install fnss-clitools; then
+            install_ok=1
+        fi
     fi
 else
-    if [ -n "$PIP_BREAK" ]; then
-        "$PY_CMD" -m pip install --user $PIP_BREAK fnss-clitools && install_ok=1 || true
-    else
-        "$PY_CMD" -m pip install --user fnss-clitools && install_ok=1 || true
+    if pip_user_install fnss-clitools; then
+        install_ok=1
     fi
 fi
 
@@ -227,17 +251,24 @@ if [ "$install_ok" = "0" ]; then
     if [ -f "$PROJECT_DIR/pyproject.toml" ]; then
         echo "→ PyPI 不可达，从本地源码安装：$PROJECT_DIR"
         if [ "$have_pipx" = "1" ]; then
-            "$PY_CMD" -m pipx install "$PROJECT_DIR" || true
-        elif [ -n "$PIP_BREAK" ]; then
-            "$PY_CMD" -m pip install --user $PIP_BREAK "$PROJECT_DIR" || true
+            "${PIPX_CMD[@]}" install "$PROJECT_DIR" && install_ok=1 || {
+                echo "→ pipx 本地安装也失败，尝试 pip --user 方式..."
+                pip_user_install "$PROJECT_DIR" && install_ok=1 || true
+            }
         else
-            "$PY_CMD" -m pip install --user "$PROJECT_DIR" || true
+            pip_user_install "$PROJECT_DIR" && install_ok=1 || true
         fi
     else
         echo "错误：PyPI 不可达且未找到本地源码，请检查网络或手动安装" >&2
         exit 1
     fi
 fi
+
+if [ "$install_ok" = "0" ]; then
+    echo "错误：fnss-clitools 安装失败，请检查网络或手动安装" >&2
+    exit 1
+fi
+echo "✓ fnss-clitools 安装成功"
 
 # ---------- 7. 配置 PATH ----------
 # 确保用户 bin 目录在 PATH 中
