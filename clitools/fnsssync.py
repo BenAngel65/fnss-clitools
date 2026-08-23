@@ -26,22 +26,28 @@ from .render import (
 )
 
 
-# Each entry: (display_name, module_path, "sync" function name)
-# Functions take (client) for oinbox/odiary; onote push_pending returns
-# (pushed, errors) tuple, and onote reconcile also returns tuple.
+# Each entry describes one module's sync surface.
+# - name:    display label
+# - module:  import path
+# - push_fn: function name that returns either int (pushed) or (pushed, errors)
+# - result_kind: "int" or "tuple" — how to interpret the return value
+# - pending_loader: function returning a list (for diagnostic display)
+# - extras: optional follow-up calls (e.g. onote reconcile_local_cache)
 _MODULES = [
     {
         "name": "oinbox",
         "module": "oinbox.sync",
         "push_fn": "push_pending",
-        "result_kind": "int",  # returns int (count pushed)
-        "extras": [],  # optional extra calls (for modules like onote)
+        "result_kind": "tuple",  # oinbox.push_pending returns (int, list[str])
+        "pending_loader": "_load_pending",
+        "extras": [],
     },
     {
         "name": "odiary",
         "module": "odiary.sync",
         "push_fn": "push_pending",
-        "result_kind": "int",  # returns int (count pushed)
+        "result_kind": "tuple",  # odiary.push_pending returns (int, list[str])
+        "pending_loader": "load_pending",
         "extras": [],
     },
     {
@@ -49,6 +55,7 @@ _MODULES = [
         "module": "onote.sync",
         "push_fn": "push_pending",
         "result_kind": "tuple",
+        "pending_loader": "load_pending",
         "extras": [
             ("reconcile_local_cache", "tuple", "vault"),
         ],
@@ -59,6 +66,18 @@ _MODULES = [
 def _load_callable(module_path: str, fn_name: str) -> Callable:
     mod = importlib.import_module(module_path)
     return getattr(mod, fn_name)
+
+
+def _load_pending_count(mod_spec: dict) -> int:
+    """Try to read the pending list count for diagnostic. Best-effort."""
+    try:
+        mod = importlib.import_module(mod_spec["module"])
+        loader = getattr(mod, mod_spec["pending_loader"], None)
+        if loader is None:
+            return 0
+        return len(loader() or [])
+    except Exception:
+        return 0
 
 
 def _call(func: Callable, client: FnssClient, result_kind: str, extra_args=()):
@@ -96,7 +115,16 @@ def main(argv=None) -> int:
         return 2
 
     render_info(f"开始同步 vault={cfg['vault']!r}")
-    print()
+
+    # Pre-flight: show pending counts so user sees what's queued.
+    pre_counts: dict[str, int] = {}
+    for mod_spec in _MODULES:
+        pre_counts[mod_spec["name"]] = _load_pending_count(mod_spec)
+    if any(v > 0 for v in pre_counts.values()):
+        summary = ", ".join(f"{n}={c}" for n, c in pre_counts.items() if c > 0)
+        render_info(f"  pending: {summary}")
+    else:
+        render_info("  pending: 无")
 
     total_pushed = 0
     total_errors: List[str] = []
@@ -104,6 +132,7 @@ def main(argv=None) -> int:
 
     for mod_spec in _MODULES:
         name = mod_spec["name"]
+        pending_before = pre_counts[name]
         try:
             push_func = _load_callable(mod_spec["module"], mod_spec["push_fn"])
         except (ImportError, AttributeError) as e:
@@ -135,10 +164,19 @@ def main(argv=None) -> int:
             for e in extra_errs:
                 total_errors[-1] = f"{name}.{extra_fn_name}: {e}"
 
-        if pushed:
+        # Status reporting: distinguish 3 cases
+        if pushed > 0:
             render_success(f"{name}: 推送 {pushed} 条")
         elif errs:
-            render_warning(f"{name}: 推送失败（{len(errs)} 条错误，仍待同步）")
+            render_warning(
+                f"{name}: 推送失败（{len(errs)} 条错误，仍待同步）"
+            )
+        elif pending_before > 0:
+            # Had pending but push returned 0 → must be idempotent
+            # (all entries already on server) or saved locally by another path
+            render_info(
+                f"{name}: 无新推送（{pending_before} 条已在 server，idempotent 跳过）"
+            )
         else:
             render_info(f"{name}: 无待同步项")
 

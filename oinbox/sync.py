@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
-from typing import Optional
+from typing import List, Optional, Tuple
 
 from clitools.config import (
     DEFAULT_INBOX_HEADER,
@@ -174,11 +174,21 @@ def add_and_sync(text: str) -> int:
         return 0
 
 
-def push_pending(client: FnssClient) -> int:
-    """Push queued pending entries to fnss. Returns count pushed."""
+def push_pending(client: FnssClient) -> Tuple[int, List[str]]:
+    """Push queued pending entries to fnss.
+
+    Returns (count_pushed, error_list).
+    - count_pushed: number of NEW entries actually written to server
+    - error_list: empty on success; non-empty if push failed
+
+    Note: idempotent entries (already on server) count as 0 new pushes.
+    Failed pushes DO NOT clear pending (so the next sync retries).
+
+    Callers (manual_sync, fnsssync) handle displaying errors.
+    """
     items = _load_pending()
     if not items:
-        return 0
+        return 0, []
     cfg = load_config()
     entries = [it["entry"] for it in items]
     try:
@@ -186,13 +196,15 @@ def push_pending(client: FnssClient) -> int:
         base = "" if remote is None else remote.get("content", "")
         new_content, appended = _merge_entries(base, entries)
         if not appended:
+            # All entries already on server (idempotent). Clear pending.
             _save_pending([])
-            return 0
+            return 0, []
         client.write_note(cfg["vault"], cfg["inbox_path"], new_content)
         _save_pending([])
-        return len(appended)
-    except FnssError:
-        return 0
+        return len(appended), []
+    except FnssError as e:
+        # Push failed; leave pending for next retry.
+        return 0, [str(e)]
 
 
 def manual_sync() -> int:
@@ -232,11 +244,16 @@ def manual_sync() -> int:
         )
         return 0
 
-    pushed = push_pending(client)
+    pushed, errs = push_pending(client)
+    for e in errs:
+        render_warning(f"推送失败：{e}")
     if pushed:
         render_success(f"已推送 {pushed} 条")
-    else:
+    elif errs:
         render_warning(
             f"推送失败：{len(pending_items)} 条仍待同步，请检查网络或服务后重试"
         )
+    else:
+        # pushed=0 and no errs → all entries were idempotent (already on server)
+        render_info(f"无新推送（{len(pending_items)} 条已在 server，idempotent 跳过）")
     return 0

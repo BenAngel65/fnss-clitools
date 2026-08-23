@@ -7,7 +7,7 @@ import tempfile
 from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional, Tuple
 
 from clitools.config import data_dir, diary_data_dir, is_configured, load_config
 from clitools.editor import edit_with_fallback as _editor_edit
@@ -341,11 +341,17 @@ def edit_log(date_str: Optional[str]) -> int:
         return 0
 
 
-def push_pending(client: FnssClient) -> int:
-    """Push queued pending entries, grouped by date. Returns count pushed."""
+def push_pending(client: FnssClient) -> Tuple[int, List[str]]:
+    """Push queued pending entries, grouped by date.
+
+    Returns (count_pushed, error_list).
+    - count_pushed: total number of entries successfully written
+    - error_list: empty on success; non-empty if some pushes failed
+      (pending retains the failed entries for the next sync retry)
+    """
     items = load_pending()
     if not items:
-        return 0
+        return 0, []
 
     cfg = load_config()
     by_date: dict[str, list[str]] = defaultdict(list)
@@ -354,18 +360,22 @@ def push_pending(client: FnssClient) -> int:
 
     total_pushed = 0
     remaining: list[dict] = []
+    errors: list[str] = []
     for date_str, entries in by_date.items():
         remote_path = diary_path_for(date_str)
         try:
             remote = client.get_note(cfg["vault"], remote_path)
             if remote is None:
-                render_warning(f"{remote_path} 不存在，保留 {len(entries)} 条")
+                # remote file doesn't exist — keep pending for next sync
+                # (the user can create the file via Obsidian/web)
+                errors.append(f"{remote_path} 不存在，保留 {len(entries)} 条")
                 remaining.extend(
                     {"date": date_str, "entry": e, "queued_at": it["queued_at"]}
                     for e, it in zip(entries, (i for i in items if i["date"] == date_str))
                 )
                 continue
             content = remote.get("content", "")
+            new_entries = []
             for entry in entries:
                 if entry.rstrip() in content:
                     continue
@@ -374,19 +384,23 @@ def push_pending(client: FnssClient) -> int:
                 # instead of re-running insert_log_entry (which would duplicate
                 # the timestamp prefix).
                 content = content.rstrip() + "\n\n" + entry.rstrip() + "\n"
+                new_entries.append(entry)
+            if not new_entries:
+                # All entries already on server (idempotent)
+                continue
             content = diary_ops._normalize(content)
             client.write_note(cfg["vault"], remote_path, content)
             diary_ops.write_local(remote_path, content)
-            total_pushed += len(entries)
+            total_pushed += len(new_entries)
         except FnssError as e:
-            render_warning(f"{remote_path} 推送失败：{e}；保留待重试")
+            errors.append(f"{remote_path} 推送失败：{e}；保留待重试")
             remaining.extend(
                 {"date": date_str, "entry": e, "queued_at": it["queued_at"]}
                 for e, it in zip(entries, (i for i in items if i["date"] == date_str))
             )
 
     save_pending(remaining)
-    return total_pushed
+    return total_pushed, errors
 
 
 def manual_sync() -> int:
@@ -404,10 +418,18 @@ def manual_sync() -> int:
         render_error("无法创建客户端")
         return 1
 
-    pushed = push_pending(client)
+    pushed, errs = push_pending(client)
+    for e in errs:
+        render_warning(f"推送失败：{e}")
     if pushed:
         render_success(f"已推送 {pushed} 条")
+    elif errs:
+        render_warning(
+            f"推送失败：{len(pending_items)} 条仍待同步，请检查网络或服务后重试"
+        )
     else:
+        # pushed=0, no errs → all entries were idempotent
+        render_info(f"无新推送（{len(pending_items)} 条已在 server，idempotent 跳过）")
         render_warning(
             f"推送失败：{len(pending_items)} 条仍待同步，请检查网络或服务后重试"
         )

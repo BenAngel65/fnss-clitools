@@ -334,6 +334,66 @@ def main():
 
         print(f"✓ fnsssync 统一同步：3 个模块的离线内容一次推完")
 
+        # === Scenario: fnsssync idempotent 区分（pending 存在但全在 server 上） ===
+        print()
+        print("=" * 60)
+        print("场景 fnsssync idempotent 区分：pending 有但全在 server")
+        print("=" * 60)
+        reset_state(tmp, state)
+        from odiary.sync import diary_pending_path as odiary_pending_path_fn
+        from clitools.config import data_dir
+        # 清空所有 pending
+        for p in [
+            cfg_mod.pending_path(),
+            odiary_pending_path_fn(),
+            data_dir() / "notes" / "pending.json",
+        ]:
+            if p.exists():
+                p.unlink()
+        # 把 server 端也加上这条 entry（模拟之前已同步过）
+        state.note_content = "# Inbox\n\n- [ ] already on server\n"
+        # 现在 queue 一条同样的 entry（fnsssync 应该检测到 idempotent）
+        from oinbox.sync import queue_pending as oinbox_q
+        oinbox_q(["- [ ] already on server"])
+        # 跑 fnsssync。预期：pushed=0 但 pending 原本有 1 条，应提示 idempotent
+        from clitools.fnsssync import main as fnsssync_main_idem
+        rc = fnsssync_main_idem()
+        assert rc == 0
+        print("✓ fnsssync 区分 idempotent 场景，显示 pending 数量和 idempotent 状态")
+
+        # === Scenario: server down → push fails → pending 保留 ===
+        print()
+        print("=" * 60)
+        print("场景 fnsssync server 挂掉：pending 保留，fnsssync 报推送失败")
+        print("=" * 60)
+        reset_state(tmp, state)
+        from odiary.sync import diary_pending_path as odiary_pending_path_fn
+        from clitools.config import data_dir as user_data_dir
+        # 清空所有 pending
+        for p in [
+            cfg_mod.pending_path(),
+            odiary_pending_path_fn(),
+            user_data_dir() / "notes" / "pending.json",
+        ]:
+            if p.exists():
+                p.unlink()
+        # 让 mock server 拒绝所有请求（模拟 server down）
+        state.fail_get = True
+        state.fail_post = True
+        # 离线 add
+        from oinbox.sync import queue_pending as oinbox_q3
+        oinbox_q3(["- [ ] server down test"])
+        # 跑 fnsssync。预期：报"推送失败"，pending 保留
+        from clitools.fnsssync import main as fnsssync_main_down
+        rc = fnsssync_main_down()
+        # 应该有 fatal error（rc=3）
+        assert rc == 3, f"server down 时 fnsssync 应返回 3, got {rc}"
+        # pending 应该还在
+        oinbox_q_check = cfg_mod.pending_path().read_text()
+        assert "server down test" in oinbox_q_check, \
+            f"server down 时 pending 应保留, got: {oinbox_q_check}"
+        print("✓ fnsssync server down 时正确报错并保留 pending")
+
 
 if __name__ == "__main__":
     main()
