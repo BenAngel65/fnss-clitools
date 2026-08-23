@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # fnss-clitools 通用安装脚本（Linux / macOS）
-# 自动检测系统与包管理器，安装 Python ≥ 3.8 后通过 pip 安装 fnss-clitools。
-set -e
+# 自动检测系统与包管理器，安装 Python ≥ 3.8 后通过 pipx / pip 安装 fnss-clitools。
+set -euo pipefail
 
 OS="$(uname -s)"
 case "$OS" in
@@ -114,10 +114,19 @@ fi
 
 echo "==> 使用 Python: $PY_CMD ($("$PY_CMD" -V 2>&1 | awk '{print $2}'))"
 
-# ---------- 4. 检测 pipx（PEP 668 兼容方式） ----------
+# ---------- 4. 确保用户 bin 目录存在 ----------
+if [ "$OS_FAMILY" = "linux" ]; then
+  USER_BIN="$HOME/.local/bin"
+else
+  PY_MINOR="$("$PY_CMD" -c 'import sys;print("%d.%d"%sys.version_info[:2])')"
+  USER_BIN="$HOME/Library/Python/$PY_MINOR/bin"
+fi
+mkdir -p "$USER_BIN"
+
+# ---------- 4.5 检测 pipx（PEP 668 兼容方式） ----------
 # 现代发行版（Debian 12+, Ubuntu 23.04+, Fedora 38+ 等）默认禁止系统级 pip install。
 # 改用 pipx，把每个 CLI 工具装在独立的 venv 里，不污染系统。
-# Fallback: pip install --user --break-system-packages（不推荐但能跑）。
+# Fallback: pip install --user（必要时加 --break-system-packages，仅 Debian 系打补丁）。
 have_pipx=0
 if command -v pipx >/dev/null 2>&1; then
     have_pipx=1
@@ -125,23 +134,62 @@ elif "$PY_CMD" -m pipx --version >/dev/null 2>&1; then
     have_pipx=1
 fi
 
-if [ "$have_pipx" = "0" ] && [ "$OS_FAMILY" = "linux" ]; then
+if [ "$have_pipx" = "0" ]; then
     echo "==> pipx 未安装，尝试装上..."
     case "$PKG_MGR" in
-    apt)    sudo apt install -y pipx 2>/dev/null || sudo apt install -y python3-pipx 2>/dev/null ;;
-    dnf)    sudo dnf install -y pipx ;;
-    yum)    sudo yum install -y pipx ;;
-    pacman) sudo pacman -S --noconfirm python-pipx ;;
-    apk)    sudo apk add py3-pipx ;;
-    zypper) sudo zypper install -y python3-pipx ;;
-    brew)   brew install pipx ;;
+    apt)
+        sudo apt update -y
+        sudo apt install -y pipx || sudo apt install -y python3-pipx || {
+            echo "→ apt 安装 pipx 失败，尝试用 pip 方式..."
+            "$PY_CMD" -m pip install --user pipx 2>/dev/null || true
+        }
+        ;;
+    dnf)    sudo dnf install -y pipx || {
+                echo "→ dnf 安装 pipx 失败，尝试用 pip 方式..."
+                "$PY_CMD" -m pip install --user pipx 2>/dev/null || true
+            } ;;
+    yum)    sudo yum install -y pipx || {
+                echo "→ yum 安装 pipx 失败，尝试用 pip 方式..."
+                "$PY_CMD" -m pip install --user pipx 2>/dev/null || true
+            } ;;
+    pacman) sudo pacman -S --noconfirm python-pipx || {
+                echo "→ pacman 安装 pipx 失败，尝试用 pip 方式..."
+                "$PY_CMD" -m pip install --user pipx 2>/dev/null || true
+            } ;;
+    apk)    sudo apk add py3-pipx || {
+                echo "→ apk 安装 pipx 失败，尝试用 pip 方式..."
+                "$PY_CMD" -m pip install --user pipx 2>/dev/null || true
+            } ;;
+    zypper) sudo zypper install -y python3-pipx || {
+                echo "→ zypper 安装 pipx 失败，尝试用 pip 方式..."
+                "$PY_CMD" -m pip install --user pipx 2>/dev/null || true
+            } ;;
+    brew)   brew install pipx || {
+                echo "→ brew 安装 pipx 失败，尝试用 pip 方式..."
+                "$PY_CMD" -m pip install --user pipx 2>/dev/null || true
+            } ;;
+    none)
+        echo "→ 无包管理器可用，尝试用 pip 方式装 pipx..."
+        "$PY_CMD" -m pip install --user pipx 2>/dev/null || true
+        ;;
     esac
+    # 刷新 PATH — pip install --user 装的 pipx 可能在 $USER_BIN
+    export PATH="$USER_BIN:$PATH"
     if command -v pipx >/dev/null 2>&1 || "$PY_CMD" -m pipx --version >/dev/null 2>&1; then
         have_pipx=1
         echo "✓ pipx 已安装"
     else
-        echo "→ pipx 装不上，将用 pip --break-system-packages（仅推荐个人机）"
+        echo "→ pipx 装不上，将用 pip --user 方式安装"
     fi
+fi
+
+# ---------- 4.8 检测 --break-system-packages 支持 ----------
+# PEP 668 的 --break-system-packages 标志仅在 Debian/Ubuntu 打补丁的 pip 上存在。
+# macOS、Arch、Fedora 等 pip 不认这个标志，直接传会报 unknown option。
+if "$PY_CMD" -m pip install --help 2>/dev/null | grep -q -- '--break-system-packages'; then
+    PIP_BREAK="--break-system-packages"
+else
+    PIP_BREAK=""
 fi
 
 pip_install() { :; }  # placeholder kept for compat; no longer used
@@ -149,10 +197,10 @@ pip_install() { :; }  # placeholder kept for compat; no longer used
 # ---------- 5. 升级 pip / pipx ----------
 if [ "$have_pipx" = "1" ]; then
     echo "==> 升级 pipx..."
-    "$PY_CMD" -m pipx upgrade pipx || true
+    "$PY_CMD" -m pipx upgrade pipx 2>/dev/null || true
 else
     echo "==> 升级 pip..."
-    "$PY_CMD" -m pip install --upgrade pip --user --break-system-packages --quiet
+    "$PY_CMD" -m pip install --upgrade pip --user $PIP_BREAK --quiet 2>/dev/null || true
 fi
 
 # ---------- 6. 安装 fnss-clitools ----------
@@ -167,8 +215,10 @@ if [ "$have_pipx" = "1" ]; then
         install_ok=1
     fi
 else
-    if "$PY_CMD" -m pip install --user --break-system-packages fnss-clitools; then
-        install_ok=1
+    if [ -n "$PIP_BREAK" ]; then
+        "$PY_CMD" -m pip install --user $PIP_BREAK fnss-clitools && install_ok=1 || true
+    else
+        "$PY_CMD" -m pip install --user fnss-clitools && install_ok=1 || true
     fi
 fi
 
@@ -178,8 +228,10 @@ if [ "$install_ok" = "0" ]; then
         echo "→ PyPI 不可达，从本地源码安装：$PROJECT_DIR"
         if [ "$have_pipx" = "1" ]; then
             "$PY_CMD" -m pipx install "$PROJECT_DIR" || true
+        elif [ -n "$PIP_BREAK" ]; then
+            "$PY_CMD" -m pip install --user $PIP_BREAK "$PROJECT_DIR" || true
         else
-            "$PY_CMD" -m pip install --user --break-system-packages "$PROJECT_DIR" || true
+            "$PY_CMD" -m pip install --user "$PROJECT_DIR" || true
         fi
     else
         echo "错误：PyPI 不可达且未找到本地源码，请检查网络或手动安装" >&2
@@ -188,15 +240,7 @@ if [ "$install_ok" = "0" ]; then
 fi
 
 # ---------- 7. 配置 PATH ----------
-# Linux:  ~/.local/bin
-# macOS:  ~/Library/Python/<major>.<minor>/bin  (PEP 370)
-if [ "$OS_FAMILY" = "linux" ]; then
-  USER_BIN="$HOME/.local/bin"
-else
-  PY_MINOR="$("$PY_CMD" -c 'import sys;print("%d.%d"%sys.version_info[:2])')"
-  USER_BIN="$HOME/Library/Python/$PY_MINOR/bin"
-fi
-
+# 确保用户 bin 目录在 PATH 中
 SHELL_RC=""
 [ -f "$HOME/.zshrc" ] && SHELL_RC="$HOME/.zshrc"
 [ -z "$SHELL_RC" ] && [ -f "$HOME/.bashrc" ] && SHELL_RC="$HOME/.bashrc"
