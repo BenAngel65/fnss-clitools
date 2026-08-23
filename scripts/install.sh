@@ -161,10 +161,23 @@ else
     echo "→ PATH 已包含 $PATH_MARKER 或未找到 shell rc，跳过"
 fi
 
+echo "==> 安装 fnssclitools-update 自更新命令..."
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+UPDATE_SRC="$SCRIPT_DIR/fnssclitools-update.sh"
+UPDATE_DST="$USER_BIN/fnssclitools-update"
+if [ -f "$UPDATE_SRC" ]; then
+    mkdir -p "$(dirname "$UPDATE_DST")"
+    cp "$UPDATE_SRC" "$UPDATE_DST"
+    chmod +x "$UPDATE_DST"
+    echo "✓ 已安装 fnssclitools-update 到 $UPDATE_DST"
+else
+    echo "→ 未找到 $UPDATE_SRC（开发模式？跳过）"
+fi
+
 echo ""
 echo "============================================"
 echo "  fnss-clitools 安装完成！"
-echo "  可用命令：oinbox, odiary, onote, fnsssync"
+echo "  可用命令：oinbox, odiary, onote, fnsssync, fnssclitools-update"
 echo "============================================"
 echo ""
 echo "下一步："
@@ -178,6 +191,7 @@ echo "     odiary list              # 显示今天 # Logs"
 echo "     odiary 2026-08-11 补记   # 添加到指定日期"
 echo "     onote search todo        # 搜索笔记"
 echo "     fnsssync                # 统一同步（推荐）"
+echo "     fnssclitools-update --check  # 检查更新"
 echo ""
 echo "配置/数据文件位置（实际路径请运行 onote config --path 查看）："
 if [ "$OS_FAMILY" = "linux" ]; then
