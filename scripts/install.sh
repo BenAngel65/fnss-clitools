@@ -228,43 +228,36 @@ install_ok=0
 # --- helper: 用 pip --user 安装（自动加 --break-system-packages 如果支持）---
 pip_user_install() {
     if [ -n "$PIP_BREAK" ]; then
-        "$PY_CMD" -m pip install --user $PIP_BREAK "$@"
+        "$PY_CMD" -m pip install --user $PIP_BREAK --force-reinstall "$@"
     else
-        "$PY_CMD" -m pip install --user "$@"
+        "$PY_CMD" -m pip install --user --force-reinstall "$@"
     fi
 }
 
-# 优先 PyPI
-if [ "$have_pipx" = "1" ]; then
-    if "${PIPX_CMD[@]}" install fnss-clitools; then
-        install_ok=1
+# --- 安装策略：有本地源码就优先本地，否则走 PyPI ---
+# 本地源码安装能保证跑的是最新代码（开发场景），PyPI 是给纯用户用的。
+if [ -f "$PROJECT_DIR/pyproject.toml" ]; then
+    echo "→ 从本地源码安装：$PROJECT_DIR"
+    if [ "$have_pipx" = "1" ]; then
+        "${PIPX_CMD[@]}" install --force "$PROJECT_DIR" && install_ok=1 || {
+            echo "→ pipx 本地安装失败，尝试 pip --user 方式..."
+            pip_user_install "$PROJECT_DIR" && install_ok=1 || true
+        }
     else
-        echo "→ pipx install 失败，尝试 pip --user 方式..."
-        if pip_user_install fnss-clitools; then
-            install_ok=1
-        fi
-    fi
-else
-    if pip_user_install fnss-clitools; then
-        install_ok=1
+        pip_user_install "$PROJECT_DIR" && install_ok=1 || true
     fi
 fi
 
-# PyPI 失败则从本地源码装
+# 本地源码不存在或安装失败，回退 PyPI
 if [ "$install_ok" = "0" ]; then
-    if [ -f "$PROJECT_DIR/pyproject.toml" ]; then
-        echo "→ PyPI 不可达，从本地源码安装：$PROJECT_DIR"
-        if [ "$have_pipx" = "1" ]; then
-            "${PIPX_CMD[@]}" install "$PROJECT_DIR" && install_ok=1 || {
-                echo "→ pipx 本地安装也失败，尝试 pip --user 方式..."
-                pip_user_install "$PROJECT_DIR" && install_ok=1 || true
-            }
-        else
-            pip_user_install "$PROJECT_DIR" && install_ok=1 || true
-        fi
+    echo "→ 从 PyPI 安装 fnss-clitools..."
+    if [ "$have_pipx" = "1" ]; then
+        "${PIPX_CMD[@]}" install --force fnss-clitools && install_ok=1 || {
+            echo "→ pipx PyPI 安装失败，尝试 pip --user 方式..."
+            pip_user_install fnss-clitools && install_ok=1 || true
+        }
     else
-        echo "错误：PyPI 不可达且未找到本地源码，请检查网络或手动安装" >&2
-        exit 1
+        pip_user_install fnss-clitools && install_ok=1 || true
     fi
 fi
 
@@ -329,12 +322,13 @@ fi
 echo ""
 echo "============================================"
 echo "  fnss-clitools 安装完成！"
-echo "  可用命令：oinbox, odiary, onote, fnsssync, fnssclitools-update"
+echo "  可用命令：oinbox, odiary, onote, fnsssync, fnsswatch, fnssclitools-update"
 echo "============================================"
 echo ""
 echo "下一步："
-echo "  1. 配置 fnss 凭证（四个工具共享同一份配置）："
+echo "  1. 配置 fnss 凭证（所有工具共享同一份配置）："
 echo "     onote config --host https://fnss.example.com --token YOUR_TOKEN"
+echo "     fnsswatch config watch_local_dir ~/Note  # 设置本地监控目录"
 echo ""
 echo "  2. 试运行："
 echo "     oinbox list              # 拉取并渲染 INBOX.md"
@@ -343,6 +337,8 @@ echo "     odiary list              # 显示今天 # Logs"
 echo "     odiary 2026-08-11 补记   # 添加到指定日期"
 echo "     onote search todo        # 搜索笔记"
 echo "     fnsssync                # 统一同步（推荐）"
+echo "     fnsswatch on             # 启动监控守护进程（双向自动同步）"
+echo "     fnsswatch status         # 查看守护进程状态"
 echo "     fnssclitools-update --check  # 检查更新"
 echo ""
 echo "配置/数据文件位置（实际路径请运行 onote config --path 查看）："

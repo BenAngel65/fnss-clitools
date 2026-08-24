@@ -124,7 +124,7 @@ class FnssClient:
     def delete_note(self, vault: str, path: str) -> dict:
         """Soft-delete (move to recycle bin)."""
         payload = self._request(
-            "DELETE", "/api/note", params={"vault": vault, "path": path}
+            "DELETE", "/api/note", data={"vault": vault, "path": path}
         )
         return self._check_success(payload, "删除")
 
@@ -133,7 +133,7 @@ class FnssClient:
         payload = self._request(
             "DELETE",
             "/api/note/recycle-clear",
-            params={"vault": vault, "path": path},
+            data={"vault": vault, "path": path},
         )
         return self._check_success(payload, "硬删")
 

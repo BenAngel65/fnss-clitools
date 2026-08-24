@@ -24,6 +24,7 @@ dependencies = [
     "requests>=2.28",
     "rich>=13.0",
     "platformdirs>=3.0",
+    "watchdog>=3.0",
 ]
 
 [project.scripts]
@@ -31,11 +32,13 @@ oinbox = "oinbox.cli:main"
 odiary = "odiary.cli:main"
 onote = "onote.cli:main"
 fnsssync = "clitools.fnsssync:main"
+fnsswatch = "fnsswatch.cli:main"
 
 [tool.setuptools]
-packages = ["clitools", "oinbox", "odiary", "onote"]
+packages = ["clitools", "oinbox", "odiary", "onote", "fnsswatch"]
 
 [tool.setuptools.package-data]
 "clitools" = ["py.typed"]
 "oinbox" = ["py.typed"]
 "odiary" = ["py.typed"]
+"fnsswatch" = ["py.typed"]

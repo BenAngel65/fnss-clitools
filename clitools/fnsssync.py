@@ -60,6 +60,14 @@ _MODULES = [
             ("reconcile_local_cache", "tuple", "vault"),
         ],
     },
+    {
+        "name": "fnsswatch",
+        "module": "fnsswatch.sync",
+        "push_fn": "push_pending",
+        "result_kind": "tuple",
+        "pending_loader": "load_pending",
+        "extras": [],
+    },
 ]
 
 

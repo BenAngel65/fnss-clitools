@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import socket
 from pathlib import Path
 from typing import Any, Dict
 
@@ -27,6 +28,11 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "diary_dir": "Logs/Diary",
     "notes_dir": "Inbox",
     "editor": "",
+    "watch_dir": "",
+    "watch_local_dir": "",          # 旧字段（单值，向后兼容）
+    "watch_local_dirs": {},         # 新字段：{hostname: path}，.config 同步时按主机区分
+    "watch_poll_interval": 30,
+    "watch_debounce": 2.0,
 }
 
 DEFAULT_INBOX_HEADER = "# Inbox\n\n"
@@ -88,6 +94,35 @@ def save_config(cfg: Dict[str, Any]) -> Path:
 def is_configured(cfg: Dict[str, Any] | None = None) -> bool:
     cfg = cfg if cfg is not None else load_config()
     return bool(cfg.get("host") and cfg.get("token"))
+
+
+def get_local_watch_dir() -> str:
+    """按 hostname 获取本机监控目录。
+
+    因为 .config 是跨设备同步的，watch_local_dirs 用 {hostname: path} 区分。
+    首次在设备上运行时不会猜测路径，而是返回空字符串，由调用方报错提示用户手动设置。
+
+    Returns: 监控目录的绝对路径（空字符串表示当前设备未配置）
+    """
+    cfg = load_config()
+    dirs = cfg.get("watch_local_dirs", {})
+    hostname = socket.gethostname()
+
+    if hostname in dirs:
+        return dirs[hostname]
+
+    # 迁移：旧字段 watch_local_dir 直接搬运到当前 hostname
+    old = cfg.get("watch_local_dir", "").strip()
+    if old:
+        path = str(Path(old).expanduser())
+        dirs[hostname] = path
+        cfg["watch_local_dirs"] = dirs
+        save_config(cfg)
+        print(f"→ fnsswatch: 已从旧配置迁移 {hostname!r} → {path}")
+        return path
+
+    # 未配置，返回空串让调用方报错
+    return ""
 
 
 def merge_config_args(cfg: Dict[str, Any], args) -> Dict[str, Any]:

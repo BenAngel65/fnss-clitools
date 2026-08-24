@@ -48,3 +48,5 @@ htmlcov/
 # Config: ~/.config/fnss-clitools/
 # Data:   ~/.local/share/fnss-clitools/
 # These live outside the repo and are never committed.
+# Temp files
+.temp/
