@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
-from typing import Callable, List, Optional, Tuple
+from typing import Any, Callable, List, Optional, Tuple
 
 from clitools.config import is_configured, load_config
 from clitools.fnss import FnssClient, FnssError
@@ -425,7 +425,14 @@ def push_pending(client: FnssClient) -> Tuple[int, List[str]]:
 # --------------------------------------------------------------------------
 
 def full_push(client: FnssClient, vault: str, force: bool = False) -> Tuple[int, int]:
-    """全量推送：遍历本地目录，推送所有文件。
+    """全量推送：遍历本地目录，推送有变更的文件。
+
+    首次运行（state 为空）：
+    - 先 list_notes 拿远端 path 集合
+    - 远端已有的文件：只记录 local_hash 到 state，不推送（假设已同步）
+    - 远端没有的文件：正常推送（新文件）
+    后续运行（state 有记录）：
+    - hash 变了才推送
 
     Returns: (pushed_count, error_count)
     """
@@ -437,6 +444,26 @@ def full_push(client: FnssClient, vault: str, force: bool = False) -> Tuple[int,
     errors = 0
     saved_state = state.load_state()
 
+    # 首次运行检测：state 为空说明从未同步过
+    is_first_run = not saved_state
+
+    # 首次运行时拉取远端 path 集合，避免重复推送已有文件
+    remote_path_set: set[str] = set()
+    if is_first_run or force:
+        try:
+            page = 1
+            while True:
+                result = client.list_notes(vault, page=page, page_size=100)
+                for item in result["list"]:
+                    remote_path_set.add(item["path"])
+                pager = result.get("pager", {})
+                total = pager.get("totalRows", 0)
+                if page * 100 >= total:
+                    break
+                page += 1
+        except FnssError as e:
+            render_warning(f"获取远端列表失败，跳过预过滤: {e}")
+
     for p in sorted(root.rglob("*.md")):
         if not p.is_file():
             continue
@@ -447,10 +474,24 @@ def full_push(client: FnssClient, vault: str, force: bool = False) -> Tuple[int,
             content = p.read_text(encoding="utf-8")
             local_hash = state.compute_hash(content)
 
+            file_state = saved_state.get(remote_path, {})
+
             if not force:
-                file_state = saved_state.get(remote_path, {})
+                # hash 没变 → 跳过
                 if file_state.get("local_hash") == local_hash:
-                    continue  # 内容没变，跳过
+                    continue
+
+                # 首次运行 + 远端已有 → 只记录 hash，不推送
+                if is_first_run and remote_path in remote_path_set:
+                    state.update_file_state(
+                        remote_path,
+                        local_mtime=datetime.now().isoformat(timespec="seconds"),
+                        local_hash=local_hash,
+                    )
+                    continue
+            elif remote_path in remote_path_set:
+                # force 模式但也只推远端没有的？不，force 就是强制全推
+                pass
 
             ok, err, _ = _push_with_conflict_check(client, vault, remote_path, content)
             if ok:
@@ -473,13 +514,23 @@ def full_push(client: FnssClient, vault: str, force: bool = False) -> Tuple[int,
 def full_pull(client: FnssClient, vault: str, force: bool = False) -> Tuple[int, int]:
     """全量拉取：从远端拉取所有文件到本地。
 
+    首次运行（state 为空）：
+    - 只记录每个文件的 remote_version + local_hash 到 state（索引）
+    - 不拉取文件内容，不写本地文件
+    - 后续运行靠 version 增量检测，只拉真正变化的文件
+    后续运行（state 有记录）：
+    - version 预过滤：只有 version 变了才调 get_note 拉内容
+
+    force 模式：忽略 version 缓存，强制拉取所有文件内容（仍跳过首次索引逻辑）。
+
     Returns: (pulled_count, error_count)
     """
     pulled_count = 0
     errors = 0
 
+    # 1. 分页拉取远端列表（只含 path + version，不含 content）
+    remote_items: dict[str, Any] = {}  # {path: {version, ...meta}}
     page = 1
-    remote_paths: list[str] = []
     while True:
         try:
             result = client.list_notes(vault, page=page, page_size=100)
@@ -487,7 +538,9 @@ def full_pull(client: FnssClient, vault: str, force: bool = False) -> Tuple[int,
             render_error(f"获取远端列表失败: {e}")
             return pulled_count, errors + 1
 
-        remote_paths.extend(item["path"] for item in result["list"])
+        for item in result["list"]:
+            remote_items[item["path"]] = item
+
         pager = result.get("pager", {})
         total = pager.get("totalRows", 0)
         if page * 100 >= total:
@@ -496,26 +549,75 @@ def full_pull(client: FnssClient, vault: str, force: bool = False) -> Tuple[int,
 
     saved_state = state.load_state()
     watch_prefix = get_watch_dir()
-    remote_path_set = set(remote_paths)
+    remote_path_set = set(remote_items.keys())
 
-    for remote_path in remote_paths:
+    # 首次运行检测：state 为空说明从未同步过
+    is_first_run = not saved_state and not force
+
+    if is_first_run:
+        # 首次运行：只索引，不拉内容
+        # 对每个远端文件，记录 remote_version + local_hash（如果本地有同名文件）
+        indexed = 0
+        local_root = get_local_watch_root()
+        for remote_path, meta in remote_items.items():
+            if not remote_path.endswith(".md"):
+                continue
+            if watch_prefix and not remote_path.startswith(watch_prefix):
+                continue
+
+            version = meta.get("version")
+
+            # 如果本地有同名文件，计算 hash（用于后续推送时冲突检测）
+            local_hash = ""
+            local_mtime = None
+            if local_root.exists():
+                local_file = remote_to_local(remote_path)
+                if local_file.exists():
+                    try:
+                        local_content = local_file.read_text(encoding="utf-8")
+                        local_hash = state.compute_hash(local_content)
+                        local_mtime = datetime.now().isoformat(timespec="seconds")
+                    except OSError:
+                        pass
+
+            saved_state[remote_path] = {
+                "remote_version": version,
+                "local_hash": local_hash,
+                "synced_at": datetime.now().isoformat(timespec="seconds"),
+            }
+            if local_mtime:
+                saved_state[remote_path]["local_mtime"] = local_mtime
+            indexed += 1
+
+        state.save_state(saved_state)
+        state.flush_all()
+        render_info(
+            f"首次同步索引完成：已记录 {indexed} 个远端文件版本信息（未下载内容）。\n"
+            f"再次运行 `fnsswatch pull` 将按版本增量拉取变更内容。"
+        )
+        return 0, 0
+
+    # 2. 后续运行：逐个检查，version 预过滤，只有变了才拉内容
+    for remote_path, meta in remote_items.items():
         if not remote_path.endswith(".md"):
             continue
-        # 如果设置了 watch_dir 前缀，只拉取该范围内的文件
         if watch_prefix and not remote_path.startswith(watch_prefix):
             continue
 
+        version = meta.get("version")
+
+        # version 预过滤：没变就跳过，不发 get_note 请求
+        if not force:
+            file_state = saved_state.get(remote_path, {})
+            if file_state.get("remote_version") == version:
+                continue
+
+        # version 变了（或 force），才拉取完整内容
         try:
             note = client.get_note(vault, remote_path)
             if note is None:
                 continue
             content = note.get("content", "")
-            version = note.get("version")
-
-            if not force:
-                file_state = saved_state.get(remote_path, {})
-                if file_state.get("remote_version") == version:
-                    continue  # 版本没变，跳过
 
             # 冲突检测：本地是否有未推送的修改
             base_content = state.load_base_content(remote_path)
