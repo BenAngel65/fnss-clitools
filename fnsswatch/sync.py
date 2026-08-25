@@ -599,7 +599,9 @@ def full_pull(client: FnssClient, vault: str, force: bool = False) -> Tuple[int,
         )
         return 0, 0
 
-    # 2. 后续运行：逐个检查，version 预过滤，只有变了才拉内容
+    # 2. 后续运行：version 预过滤，并发拉取内容，串行处理 merge/写入
+    # 2a. 收集需要拉取的文件列表
+    to_fetch: list[tuple[str, Any]] = []  # [(remote_path, version)]
     for remote_path, meta in remote_items.items():
         if not remote_path.endswith(".md"):
             continue
@@ -618,13 +620,38 @@ def full_pull(client: FnssClient, vault: str, force: bool = False) -> Tuple[int,
                 if file_state.get("local_hash"):
                     continue  # 已同步过内容，版本也没变，跳过
 
-        # version 变了（或 force），才拉取完整内容
-        try:
-            note = client.get_note(vault, remote_path)
-            if note is None:
-                continue
-            content = note.get("content", "")
+        to_fetch.append((remote_path, version))
 
+    # 2b. 并发拉取远端内容（IO 密集型，适合并发）
+    fetched: dict[str, tuple[str, Any]] = {}  # remote_path -> (content, version)
+    if to_fetch:
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        import os
+
+        max_workers = min(8, (os.cpu_count() or 2) + 2)
+
+        def _fetch_one(rp_ver: tuple[str, Any]) -> tuple[str, Any, Optional[str]]:
+            """线程函数：拉取一个文件。返回 (remote_path, version, content_or_None)"""
+            rp, ver = rp_ver
+            try:
+                note = client.get_note(vault, rp)
+                if note is None:
+                    return rp, ver, None
+                return rp, ver, note.get("content", "")
+            except FnssError as e:
+                render_warning(f"拉取失败 {rp}: {e}")
+                return rp, ver, None
+
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = [executor.submit(_fetch_one, item) for item in to_fetch]
+            for fut in as_completed(futures):
+                rp, ver, content = fut.result()
+                if content is not None:
+                    fetched[rp] = (content, ver)
+
+    # 2c. 串行处理 merge + 写入 + 更新 state（线程安全）
+    for remote_path, (content, version) in fetched.items():
+        try:
             # 冲突检测：本地是否有未推送的修改
             base_content = state.load_base_content(remote_path)
             local_content = read_local(remote_path)
@@ -637,6 +664,7 @@ def full_pull(client: FnssClient, vault: str, force: bool = False) -> Tuple[int,
 
             # 首次索引后第一次拉取：base 不存在但本地有旧文件
             # 此时无法 3-way merge（缺 base），退化为 union merge 保留双方所有行
+            file_state = saved_state.get(remote_path, {})
             first_index_pull = (
                 local_content is not None
                 and base_content is None
@@ -681,7 +709,7 @@ def full_pull(client: FnssClient, vault: str, force: bool = False) -> Tuple[int,
             pulled_count += 1
         except FnssError as e:
             errors += 1
-            render_warning(f"拉取失败 {remote_path}: {e}")
+            render_warning(f"处理失败 {remote_path}: {e}")
 
     # 检测远端没有但本地有的文件（远端已删除同步）
     if force:
