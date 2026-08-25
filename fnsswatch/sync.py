@@ -599,9 +599,10 @@ def full_pull(client: FnssClient, vault: str, force: bool = False) -> Tuple[int,
         )
         return 0, 0
 
-    # 2. 后续运行：version 预过滤，并发拉取内容，串行处理 merge/写入
+    # 2. 后续运行：version 预过滤，size 预过滤，分批并发拉取，串行处理 merge/写入
     # 2a. 收集需要拉取的文件列表
-    to_fetch: list[tuple[str, Any]] = []  # [(remote_path, version)]
+    to_fetch: list[tuple[str, Any, int]] = []  # [(remote_path, version, remote_size)]
+    skipped_by_size = 0
     for remote_path, meta in remote_items.items():
         if not remote_path.endswith(".md"):
             continue
@@ -609,6 +610,7 @@ def full_pull(client: FnssClient, vault: str, force: bool = False) -> Tuple[int,
             continue
 
         version = meta.get("version")
+        remote_size = meta.get("size", 0)
 
         # version 预过滤：没变就跳过，不发 get_note 请求
         # 但如果 local_hash 为空（首次索引后未拉取内容），需要拉一次
@@ -620,19 +622,47 @@ def full_pull(client: FnssClient, vault: str, force: bool = False) -> Tuple[int,
                 if file_state.get("local_hash"):
                     continue  # 已同步过内容，版本也没变，跳过
 
-        to_fetch.append((remote_path, version))
+        # size 预过滤：如果本地有同名文件且大小一致，大概率内容相同
+        # 直接用本地内容标记 hash，不发 get_note
+        if not force and remote_size > 0:
+            local_file = remote_to_local(remote_path)
+            if local_file.exists():
+                try:
+                    local_size = local_file.stat().st_size
+                    # 远端 size 不含末尾 \n 补齐，本地写入时会补 \n
+                    # 所以 size 差 1 字节也算匹配
+                    if local_size == remote_size or local_size == remote_size + 1:
+                        local_content = local_file.read_text(encoding="utf-8")
+                        local_hash = state.compute_hash(local_content)
+                        saved_state[remote_path] = {
+                            "remote_version": version,
+                            "local_hash": local_hash,
+                            "local_mtime": datetime.now().isoformat(timespec="seconds"),
+                            "synced_at": datetime.now().isoformat(timespec="seconds"),
+                        }
+                        state.save_base_content(remote_path, local_content)
+                        skipped_by_size += 1
+                        continue
+                except OSError:
+                    pass
 
-    # 2b. 并发拉取远端内容（IO 密集型，适合并发）
+        to_fetch.append((remote_path, version, remote_size))
+
+    if skipped_by_size:
+        render_info(f"size 预过滤跳过 {skipped_by_size} 个文件（本地大小一致，假定内容相同）")
+
+    # 2b. 分批并发拉取远端内容（避免内存中攒太多数据）
     fetched: dict[str, tuple[str, Any]] = {}  # remote_path -> (content, version)
     if to_fetch:
         from concurrent.futures import ThreadPoolExecutor, as_completed
         import os
 
-        max_workers = min(8, (os.cpu_count() or 2) + 2)
+        max_workers = min(5, (os.cpu_count() or 2) + 1)
+        batch_size = 200
 
-        def _fetch_one(rp_ver: tuple[str, Any]) -> tuple[str, Any, Optional[str]]:
+        def _fetch_one(item: tuple[str, Any, int]) -> tuple[str, Any, Optional[str]]:
             """线程函数：拉取一个文件。返回 (remote_path, version, content_or_None)"""
-            rp, ver = rp_ver
+            rp, ver, _ = item
             try:
                 note = client.get_note(vault, rp)
                 if note is None:
@@ -642,74 +672,86 @@ def full_pull(client: FnssClient, vault: str, force: bool = False) -> Tuple[int,
                 render_warning(f"拉取失败 {rp}: {e}")
                 return rp, ver, None
 
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = [executor.submit(_fetch_one, item) for item in to_fetch]
-            for fut in as_completed(futures):
-                rp, ver, content = fut.result()
-                if content is not None:
-                    fetched[rp] = (content, ver)
+        total_batches = (len(to_fetch) + batch_size - 1) // batch_size
+        for batch_idx in range(0, len(to_fetch), batch_size):
+            batch = to_fetch[batch_idx:batch_idx + batch_size]
+            batch_num = batch_idx // batch_size + 1
+            render_info(f"并发拉取批次 {batch_num}/{total_batches}（{len(batch)} 个文件）...")
 
-    # 2c. 串行处理 merge + 写入 + 更新 state（线程安全）
-    for remote_path, (content, version) in fetched.items():
-        try:
-            # 冲突检测：本地是否有未推送的修改
-            base_content = state.load_base_content(remote_path)
-            local_content = read_local(remote_path)
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futures = [executor.submit(_fetch_one, item) for item in batch]
+                for fut in as_completed(futures):
+                    rp, ver, content = fut.result()
+                    if content is not None:
+                        fetched[rp] = (content, ver)
 
-            local_modified = (
-                local_content is not None
-                and base_content is not None
-                and state.compute_hash(local_content) != state.compute_hash(base_content)
-            )
+            # 每批处理完后立即处理 merge + 写入
+            for remote_path, (content, version) in fetched.items():
+                try:
+                    # 冲突检测：本地是否有未推送的修改
+                    base_content = state.load_base_content(remote_path)
+                    local_content = read_local(remote_path)
 
-            # 首次索引后第一次拉取：base 不存在但本地有旧文件
-            # 此时无法 3-way merge（缺 base），退化为 union merge 保留双方所有行
-            file_state = saved_state.get(remote_path, {})
-            first_index_pull = (
-                local_content is not None
-                and base_content is None
-                and not file_state.get("local_hash")
-            )
-
-            if local_modified or first_index_pull:
-                # 双方都改了 → 3-way merge（有 base）或 union merge（无 base）
-                merge_result, has_conflict = merge_or_conflict(
-                    base_content, local_content, content
-                )
-                if has_conflict:
-                    final_content = _resolve_conflict(
-                        remote_path, merge_result, base_content, local_content, content
+                    local_modified = (
+                        local_content is not None
+                        and base_content is not None
+                        and state.compute_hash(local_content) != state.compute_hash(base_content)
                     )
-                    if _conflict_callback is not None:
-                        render_info(f"✓ 拉取冲突已按用户选择解决: {remote_path}")
-                    else:
-                        render_warning(
-                            f"⚠ 拉取冲突已自动合并（union）: {remote_path}\n"
-                            f"  本地新增: {merge_result.local_added}\n"
-                            f"  远端新增: {merge_result.remote_added}\n"
-                            f"  本地删除: {merge_result.local_deleted}\n"
-                            f"  远端删除: {merge_result.remote_deleted}\n"
-                            f"  冲突详情: {merge_result.conflicts}"
-                        )
-                else:
-                    final_content = merge_result.content
-                    render_info(f"✓ 拉取自动合并: {remote_path}")
-            else:
-                final_content = content
 
-            _, actual_written = write_local(remote_path, final_content)
-            actual_hash = state.compute_hash(actual_written)
-            state.save_base_content(remote_path, actual_written)
-            state.update_file_state(
-                remote_path,
-                local_mtime=datetime.now().isoformat(timespec="seconds"),
-                remote_version=version,
-                local_hash=actual_hash,
-            )
-            pulled_count += 1
-        except FnssError as e:
-            errors += 1
-            render_warning(f"处理失败 {remote_path}: {e}")
+                    # 首次索引后第一次拉取：base 不存在但本地有旧文件
+                    # 此时无法 3-way merge（缺 base），退化为 union merge 保留双方所有行
+                    file_state = saved_state.get(remote_path, {})
+                    first_index_pull = (
+                        local_content is not None
+                        and base_content is None
+                        and not file_state.get("local_hash")
+                    )
+
+                    if local_modified or first_index_pull:
+                        # 双方都改了 → 3-way merge（有 base）或 union merge（无 base）
+                        merge_result, has_conflict = merge_or_conflict(
+                            base_content, local_content, content
+                        )
+                        if has_conflict:
+                            final_content = _resolve_conflict(
+                                remote_path, merge_result, base_content, local_content, content
+                            )
+                            if _conflict_callback is not None:
+                                render_info(f"✓ 拉取冲突已按用户选择解决: {remote_path}")
+                            else:
+                                render_warning(
+                                    f"⚠ 拉取冲突已自动合并（union）: {remote_path}\n"
+                                    f"  本地新增: {merge_result.local_added}\n"
+                                    f"  远端新增: {merge_result.remote_added}\n"
+                                    f"  本地删除: {merge_result.local_deleted}\n"
+                                    f"  远端删除: {merge_result.remote_deleted}\n"
+                                    f"  冲突详情: {merge_result.conflicts}"
+                                )
+                        else:
+                            final_content = merge_result.content
+                            render_info(f"✓ 拉取自动合并: {remote_path}")
+                    else:
+                        final_content = content
+
+                    _, actual_written = write_local(remote_path, final_content)
+                    actual_hash = state.compute_hash(actual_written)
+                    state.save_base_content(remote_path, actual_written)
+                    state.update_file_state(
+                        remote_path,
+                        local_mtime=datetime.now().isoformat(timespec="seconds"),
+                        remote_version=version,
+                        local_hash=actual_hash,
+                    )
+                    pulled_count += 1
+                except FnssError as e:
+                    errors += 1
+                    render_warning(f"处理失败 {remote_path}: {e}")
+
+            # 每批处理后 flush 一次 state（避免内存中攒太多数据）
+            state.save_state(saved_state)
+            state.flush_all()
+            fetched.clear()
+            render_info(f"批次 {batch_num}/{total_batches} 完成，累计拉取 {pulled_count} 个文件")
 
     # 检测远端没有但本地有的文件（远端已删除同步）
     if force:
