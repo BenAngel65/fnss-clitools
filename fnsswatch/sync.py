@@ -475,6 +475,9 @@ def full_push(client: FnssClient, vault: str, force: bool = False) -> Tuple[int,
     for p in sorted(root.rglob("*.md")):
         if not p.is_file():
             continue
+        # 跳过 macOS AppleDouble 文件（._ 开头）和其他隐藏文件
+        if any(part.startswith("._") for part in p.parts):
+            continue
         remote_path = local_to_remote(p)
         if remote_path is None:
             continue
@@ -759,6 +762,8 @@ def full_pull(client: FnssClient, vault: str, force: bool = False) -> Tuple[int,
         if local_root.exists():
             for p in sorted(local_root.rglob("*.md")):
                 if not p.is_file():
+                    continue
+                if any(part.startswith("._") for part in p.parts):
                     continue
                 rp = local_to_remote(p)
                 if rp and rp not in remote_path_set:

@@ -58,6 +58,8 @@ def _should_ignore(path: Path) -> bool:
     for part in parts:
         if part.startswith(".") and part not in (".", ".."):
             return True
+        if part.startswith("._"):
+            return True
         if part in _IGNORE_DIRS:
             return True
     # 只处理 .md 文件
