@@ -70,7 +70,14 @@ def _should_ignore(path: Path) -> bool:
 
 def _on_file_changed(remote_path: str, event_type: str) -> None:
     """文件变化处理（去抖后调用）。"""
-    if state.is_ignored(remote_path):
+    if event_type == "deleted":
+        # 删除事件不应被 ignore 机制跳过：
+        # ignore 是为防止 write_local 写入文件后触发 watchdog 循环推送，
+        # 但删除不存在循环风险。如果 poll 线程拉取文件到本地时 add_ignore，
+        # 随后用户删除该文件，ignore 会导致删除被跳过、远端文件不被清理。
+        state.remove_ignore(remote_path)
+        # 不 return，继续执行删除逻辑
+    elif state.is_ignored(remote_path):
         state.remove_ignore(remote_path)
         return
 
