@@ -218,6 +218,8 @@ def _push_with_conflict_check(
     # 场景 B：远端有文件但本地没有 known_remote_version（首次推送但远端已有内容）
     #         → 如果本地有 base（曾经同步过但 state 丢了），仍可 merge
     #         → 如果没有 base，退化为 union merge
+    # 场景 C：远端有文件、本地无 state 无 base，且本地内容与远端不同
+    #         → 首次推送旧数据，需 union merge 保护远端内容
     conflict = False
     if remote_version is not None and remote_content is not None:
         if known_remote_version is not None and remote_version != known_remote_version:
@@ -228,6 +230,11 @@ def _push_with_conflict_check(
             # 如果本地内容和 base 一样 = 本地没改 = 不需要 merge，直接推送就是
             # 如果本地内容和 base 不一样 = 双方都改了 = 需要 merge
             if state.compute_hash(local_content) != state.compute_hash(base_content):
+                conflict = True
+        elif known_remote_version is None and base_content is None:
+            # 场景 C：首次推送，远端已有内容，本地无 state 无 base
+            # 如果本地内容和远端不同 → union merge 保护双方内容
+            if state.compute_hash(local_content) != state.compute_hash(remote_content):
                 conflict = True
 
     content_to_push = local_content
@@ -429,10 +436,11 @@ def full_push(client: FnssClient, vault: str, force: bool = False) -> Tuple[int,
 
     首次运行（state 为空）：
     - 先 list_notes 拿远端 path 集合
-    - 远端已有的文件：只记录 local_hash 到 state，不推送（假设已同步）
+    - 远端已有的文件：跳过不推送（避免旧数据覆盖远端最新）
     - 远端没有的文件：正常推送（新文件）
     后续运行（state 有记录）：
     - hash 变了才推送
+    - 首次推送远端已有文件时走 _push_with_conflict_check 冲突检测
 
     Returns: (pushed_count, error_count)
     """
@@ -481,13 +489,10 @@ def full_push(client: FnssClient, vault: str, force: bool = False) -> Tuple[int,
                 if file_state.get("local_hash") == local_hash:
                     continue
 
-                # 首次运行 + 远端已有 → 只记录 hash，不推送
+                # 首次运行 + 远端已有 → 跳过，不推送也不记录 state
+                # 后续推送时会走 _push_with_conflict_check 的首次推送路径
+                # 自动做冲突检测和 merge
                 if is_first_run and remote_path in remote_path_set:
-                    state.update_file_state(
-                        remote_path,
-                        local_mtime=datetime.now().isoformat(timespec="seconds"),
-                        local_hash=local_hash,
-                    )
                     continue
             elif remote_path in remote_path_set:
                 # force 模式但也只推远端没有的？不，force 就是强制全推
@@ -515,11 +520,12 @@ def full_pull(client: FnssClient, vault: str, force: bool = False) -> Tuple[int,
     """全量拉取：从远端拉取所有文件到本地。
 
     首次运行（state 为空）：
-    - 只记录每个文件的 remote_version + local_hash 到 state（索引）
+    - 只记录每个文件的 remote_version 到 state（local_hash 留空）
     - 不拉取文件内容，不写本地文件
-    - 后续运行靠 version 增量检测，只拉真正变化的文件
-    后续运行（state 有记录）：
-    - version 预过滤：只有 version 变了才调 get_note 拉内容
+    - 后续运行靠 version 增量检测 + local_hash 空值检测
+    - 第二次 pull 时 local_hash 为空的文件会被拉取内容：
+      - 本地无文件 → 直接写入
+      - 本地有旧文件 → union merge（保留双方所有行，不丢数据）
 
     force 模式：忽略 version 缓存，强制拉取所有文件内容（仍跳过首次索引逻辑）。
 
@@ -556,9 +562,20 @@ def full_pull(client: FnssClient, vault: str, force: bool = False) -> Tuple[int,
 
     if is_first_run:
         # 首次运行：只索引，不拉内容
-        # 对每个远端文件，记录 remote_version + local_hash（如果本地有同名文件）
+        # 对每个远端文件，记录 remote_version 到 state。
+        #
+        # 重要：不记录 local_hash —— 因为本地文件可能是旧数据，
+        # 内容不一定和远端一致。留空 local_hash 意味着：
+        # - pull 第二轮：version 没变则跳过（正确，远端确实没变）
+        #   但本地旧文件不会被纠正 —— 这是可接受的，因为用户可以在
+        #   首次 pull 后用 `fnsswatch pull --force` 强制全量拉取覆盖
+        # - push：local_hash 为空 → 任何本地文件都会被视为"有变更"→ 推送
+        #   这在首次索引后是危险的（会把旧内容推上去覆盖远端最新）
+        #
+        # 解决方案：首次索引只记录 remote_version 和 remote_content 的 hash
+        #   作为 "remote_hash"，后续 push 时对比 local_hash vs remote_hash
+        #   来判断本地是否有真正变更，避免把旧文件误推上去
         indexed = 0
-        local_root = get_local_watch_root()
         for remote_path, meta in remote_items.items():
             if not remote_path.endswith(".md"):
                 continue
@@ -567,26 +584,11 @@ def full_pull(client: FnssClient, vault: str, force: bool = False) -> Tuple[int,
 
             version = meta.get("version")
 
-            # 如果本地有同名文件，计算 hash（用于后续推送时冲突检测）
-            local_hash = ""
-            local_mtime = None
-            if local_root.exists():
-                local_file = remote_to_local(remote_path)
-                if local_file.exists():
-                    try:
-                        local_content = local_file.read_text(encoding="utf-8")
-                        local_hash = state.compute_hash(local_content)
-                        local_mtime = datetime.now().isoformat(timespec="seconds")
-                    except OSError:
-                        pass
-
             saved_state[remote_path] = {
                 "remote_version": version,
-                "local_hash": local_hash,
+                "local_hash": "",
                 "synced_at": datetime.now().isoformat(timespec="seconds"),
             }
-            if local_mtime:
-                saved_state[remote_path]["local_mtime"] = local_mtime
             indexed += 1
 
         state.save_state(saved_state)
@@ -607,10 +609,14 @@ def full_pull(client: FnssClient, vault: str, force: bool = False) -> Tuple[int,
         version = meta.get("version")
 
         # version 预过滤：没变就跳过，不发 get_note 请求
+        # 但如果 local_hash 为空（首次索引后未拉取内容），需要拉一次
         if not force:
             file_state = saved_state.get(remote_path, {})
             if file_state.get("remote_version") == version:
-                continue
+                # version 没变，但如果 local_hash 为空说明首次索引没拉内容
+                # 需要拉一次来同步实际文件内容到本地
+                if file_state.get("local_hash"):
+                    continue  # 已同步过内容，版本也没变，跳过
 
         # version 变了（或 force），才拉取完整内容
         try:
@@ -629,8 +635,16 @@ def full_pull(client: FnssClient, vault: str, force: bool = False) -> Tuple[int,
                 and state.compute_hash(local_content) != state.compute_hash(base_content)
             )
 
-            if local_modified:
-                # 双方都改了 → 3-way merge
+            # 首次索引后第一次拉取：base 不存在但本地有旧文件
+            # 此时无法 3-way merge（缺 base），退化为 union merge 保留双方所有行
+            first_index_pull = (
+                local_content is not None
+                and base_content is None
+                and not file_state.get("local_hash")
+            )
+
+            if local_modified or first_index_pull:
+                # 双方都改了 → 3-way merge（有 base）或 union merge（无 base）
                 merge_result, has_conflict = merge_or_conflict(
                     base_content, local_content, content
                 )
