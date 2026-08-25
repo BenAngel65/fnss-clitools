@@ -300,9 +300,12 @@ def is_ignored(remote_path: str) -> bool:
 
 def force_save_ignore() -> None:
     global _ignore_dirty
+    ig = load_ignore()  # load_ignore 内部持锁，必须在锁外调用（不可重入）
+    try:
+        ig_copy = sorted(ig)  # 快照，防止写盘期间集合被修改
+    except RuntimeError:
+        return  # 并发修改，跳过本次写盘，下次 flush 重试
     with _import_lock:
-        ig = load_ignore()
-        ig_copy = sorted(ig)  # sorted 返回新 list，安全
         _ignore_dirty = False
     p = ignore_path()
     if not ig_copy:
@@ -372,9 +375,12 @@ def queue_delete(remote_path: str) -> None:
 
 def force_save_pending() -> None:
     global _pending_dirty
+    items = load_pending()  # load_pending 内部持锁，必须在锁外调用（不可重入）
+    try:
+        items_copy = list(items)  # 浅拷贝，防止写盘期间其他线程 append
+    except RuntimeError:
+        return  # 并发修改，跳过本次写盘，下次 flush 重试
     with _import_lock:
-        items = load_pending()
-        items_copy = list(items)  # 浅拷贝 list，防止其他线程 append
         _pending_dirty = False
     p = pending_path()
     if not items_copy:
