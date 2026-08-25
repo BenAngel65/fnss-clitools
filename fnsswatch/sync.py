@@ -273,6 +273,14 @@ def _push_with_conflict_check(
     # 4. 更新 state + base 缓存
     local_hash = state.compute_hash(content_to_push)
     pushed_remote_version = resp.get("version") if isinstance(resp, dict) else None
+    # fnss 服务端 write_note 返回的 version 可能不可靠（异步更新），
+    # push 后重新 get_note 获取真实 version，避免后续删除时误判冲突
+    try:
+        fresh_note = client.get_note(vault, remote_path)
+        if fresh_note is not None:
+            pushed_remote_version = fresh_note.get("version", pushed_remote_version)
+    except FnssError:
+        pass  # get_note 失败时退回 write_note 返回的 version
     mtime = datetime.now().isoformat(timespec="seconds")
     state.update_file_state(
         remote_path,
@@ -322,10 +330,12 @@ def delete_single_safe(client: FnssClient, vault: str,
                        remote_path: str) -> Tuple[bool, Optional[str]]:
     """从远端删除单个文件，带冲突检测。
 
-    如果远端文件在上次同步后被修改过，不删除，保留远端版本并拉回本地。
+    冲突检测策略：比较远端内容与本地 base（上次同步时的内容）。
+    如果远端内容与 base 不同，说明被其他设备修改过，不删除。
+    （fnss 服务端的 version 字段是异步更新的，不可靠，
+    不能用作冲突检测依据。）
     """
     file_state = state.get_file_state(remote_path) or {}
-    known_remote_version = file_state.get("remote_version")
 
     # 查远端当前状态
     try:
@@ -340,35 +350,33 @@ def delete_single_safe(client: FnssClient, vault: str,
         state.remove_base_content(remote_path)
         return True, None
 
+    remote_content = remote_note.get("content", "")
     remote_version = remote_note.get("version")
 
-    # 冲突检测：远端 version 变了 = 别人改了，不删
-    if (
-        known_remote_version is not None
-        and remote_version is not None
-        and remote_version != known_remote_version
-    ):
-        # 远端被其他设备修改了，取消删除，把远端内容拉回本地
-        remote_content = remote_note.get("content", "")
-        render_warning(
-            f"⚠ 删除冲突: {remote_path} 远端已被修改，保留远端版本并拉回本地"
-        )
-        _, actual_written = write_local(remote_path, remote_content)
-        actual_hash = state.compute_hash(actual_written)
-        now = datetime.now().isoformat(timespec="seconds")
-        state.update_file_state(
-            remote_path,
-            local_mtime=now,
-            remote_version=remote_version,
-            local_hash=actual_hash,
-            synced_at=now,
-        )
-        state.save_base_content(remote_path, actual_written)
-        # 返回 False：删除未执行，远端文件还在
-        # 调用方应据此打印不同日志（不是"已删除远端"）
-        return False, "conflict_restored"
+    # 冲突检测：比较远端内容 hash 与本地 base 内容 hash
+    base_content = state.load_base_content(remote_path)
+    if base_content is not None:
+        base_hash = state.compute_hash(base_content)
+        remote_hash = state.compute_hash(remote_content)
+        if remote_hash != base_hash:
+            # 远端被其他设备修改了，取消删除，把远端内容拉回本地
+            render_warning(
+                f"⚠ 删除冲突: {remote_path} 远端已被修改，保留远端版本并拉回本地"
+            )
+            _, actual_written = write_local(remote_path, remote_content)
+            actual_hash = state.compute_hash(actual_written)
+            now = datetime.now().isoformat(timespec="seconds")
+            state.update_file_state(
+                remote_path,
+                local_mtime=now,
+                remote_version=remote_version,
+                local_hash=actual_hash,
+                synced_at=now,
+            )
+            state.save_base_content(remote_path, actual_written)
+            return False, "conflict_restored"
 
-    # 远端没变或首次删除，执行删除
+    # 远端没被修改（或无 base 记录），执行删除
     try:
         client.delete_note(vault, remote_path)
         try:

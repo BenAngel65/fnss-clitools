@@ -181,14 +181,20 @@ def remove_file_state(remote_path: str) -> None:
 
 
 def force_save_state() -> None:
-    """立即将 state 落盘（即使没标记脏位也强制写）。"""
+    """立即将 state 落盘（即使没标记脏位也强制写）。
+
+    注意：json.dumps 遍历 dict 时不持锁（避免阻塞其他线程），
+    偶发的 RuntimeError（其他线程同时修改 dict）会被捕获跳过，
+    下次 flush 重试。
+    """
     global _state_dirty
     st = load_state()
+    try:
+        text = json.dumps(st, indent=2, ensure_ascii=False) + "\n"
+    except (RuntimeError, ValueError):
+        return  # 竞态，放弃本次写盘
     p = state_path()
-    _atomic_write(
-        p,
-        json.dumps(st, indent=2, ensure_ascii=False) + "\n",
-    )
+    _atomic_write(p, text)
     try:
         os.chmod(p, 0o600)
     except OSError:
@@ -294,9 +300,12 @@ def is_ignored(remote_path: str) -> bool:
 
 def force_save_ignore() -> None:
     global _ignore_dirty
-    ig = load_ignore()
+    with _import_lock:
+        ig = load_ignore()
+        ig_copy = sorted(ig)  # sorted 返回新 list，安全
+        _ignore_dirty = False
     p = ignore_path()
-    if not ig:
+    if not ig_copy:
         if p.exists():
             try:
                 p.unlink()
@@ -305,10 +314,8 @@ def force_save_ignore() -> None:
     else:
         _atomic_write(
             p,
-            json.dumps(sorted(ig), ensure_ascii=False) + "\n",
+            json.dumps(ig_copy, ensure_ascii=False) + "\n",
         )
-    with _import_lock:
-        _ignore_dirty = False
 
 
 # ---------------------------------------------------------------------------
@@ -365,9 +372,12 @@ def queue_delete(remote_path: str) -> None:
 
 def force_save_pending() -> None:
     global _pending_dirty
-    items = load_pending()
+    with _import_lock:
+        items = load_pending()
+        items_copy = list(items)  # 浅拷贝 list，防止其他线程 append
+        _pending_dirty = False
     p = pending_path()
-    if not items:
+    if not items_copy:
         if p.exists():
             try:
                 p.unlink()
@@ -376,10 +386,8 @@ def force_save_pending() -> None:
     else:
         _atomic_write(
             p,
-            json.dumps(items, indent=2, ensure_ascii=False) + "\n",
+            json.dumps(items_copy, indent=2, ensure_ascii=False) + "\n",
         )
-    with _import_lock:
-        _pending_dirty = False
 
 
 # ---------------------------------------------------------------------------
