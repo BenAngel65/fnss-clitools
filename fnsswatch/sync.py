@@ -364,7 +364,9 @@ def delete_single_safe(client: FnssClient, vault: str,
             synced_at=now,
         )
         state.save_base_content(remote_path, actual_written)
-        return True, None
+        # 返回 False：删除未执行，远端文件还在
+        # 调用方应据此打印不同日志（不是"已删除远端"）
+        return False, "conflict_restored"
 
     # 远端没变或首次删除，执行删除
     try:
@@ -815,11 +817,12 @@ def poll_remote_changes(client: FnssClient, vault: str) -> Tuple[int, int]:
         if file_state is None:
             # 首次见到这个文件：只记录 version，不拉内容
             # （全量初始化应由 fnsswatch pull 完成）
-            saved_state[remote_path] = {
-                "remote_version": remote_version,
-                "local_hash": "",
-                "synced_at": datetime.now().isoformat(timespec="seconds"),
-            }
+            state.update_file_state(
+                remote_path,
+                local_mtime=datetime.now().isoformat(timespec="seconds"),
+                remote_version=remote_version,
+                local_hash="",
+            )
             continue
 
         if file_state.get("remote_version") == remote_version:
@@ -897,17 +900,18 @@ def poll_remote_changes(client: FnssClient, vault: str) -> Tuple[int, int]:
                 state.save_base_content(remote_path, actual_written)
                 now = datetime.now().isoformat(timespec="seconds")
 
-            saved_state[remote_path] = {
-                "remote_version": remote_version,
-                "local_hash": actual_hash,
-                "local_mtime": now,
-                "synced_at": now,
-            }
+            state.update_file_state(
+                remote_path,
+                local_mtime=now,
+                remote_version=remote_version,
+                local_hash=actual_hash,
+            )
             pulled += 1
         except FnssError:
             errors += 1
 
-    state.save_state(saved_state)
+    # 不调用 save_state 全量覆盖，改用 update_file_state 逐条增量更新
+    # 避免 poll 线程的旧快照覆盖 push 线程在此期间写入的 state
     state.flush_all()
     return pulled, errors
 

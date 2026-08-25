@@ -102,6 +102,9 @@ def _on_file_changed(remote_path: str, event_type: str) -> None:
         ok, err = sync.delete_single_safe(client, vault, remote_path)
         if ok:
             render_info(f"✓ 已删除远端 {remote_path}")
+        elif err == "conflict_restored":
+            # 冲突恢复：远端文件被其他设备修改过，已拉回本地，不报错
+            render_info(f"↩ 删除取消: {remote_path} 远端有更新，已恢复到本地")
         else:
             render_warning(f"远端删除失败 {remote_path}: {err}")
 
