@@ -204,11 +204,14 @@ def _handle_status(args) -> int:
     else:
         render_info("pending 队列: 无")
 
-    # 显示本地文件数
+    # 显示本地文件数（排除 ._ 开头的 macOS AppleDouble 文件）
     from .sync import get_local_watch_root
     root = get_local_watch_root()
     if root.exists():
-        md_count = sum(1 for _ in root.rglob("*.md") if _.is_file())
+        md_count = sum(
+            1 for _ in root.rglob("*.md")
+            if _.is_file() and not any(p.startswith("._") for p in _.parts)
+        )
         render_info(f"本地文件: {md_count}")
     return rc
 
