@@ -326,6 +326,27 @@ def push_single_safe(client: FnssClient, vault: str, remote_path: str,
         return False, str(e)
 
 
+def _content_equal_ignoring_trailing_newline(a: str, b: str) -> bool:
+    """判断两个内容是否"语义相同"：完全相同，或仅差末尾一个换行。
+
+    背景：write_local 写本地文件与缓存 base 时，会自动补齐末尾 \\n；
+    而远端内容可能不带 \\n（例如由其他设备或 echo 直接创建）。
+    若用 hash 严格比较，远端无换行的内容会被误判为"远端被修改"，
+    导致删除被取消、本地文件回弹（删除回弹 bug）。
+
+    只容忍"恰好一个换行"的差异，与 full_pull 的 size 预过滤
+    （local_size == remote_size or local_size == remote_size + 1）保持一致。
+    不会把 "a\\n\\n" vs "a" 误判为相同。
+    """
+    if a == b:
+        return True
+    if a.endswith("\n") and a[:-1] == b:
+        return True
+    if b.endswith("\n") and b[:-1] == a:
+        return True
+    return False
+
+
 def delete_single_safe(client: FnssClient, vault: str,
                        remote_path: str) -> Tuple[bool, Optional[str]]:
     """从远端删除单个文件，带冲突检测。
@@ -354,11 +375,13 @@ def delete_single_safe(client: FnssClient, vault: str,
     remote_version = remote_note.get("version")
 
     # 冲突检测：比较远端内容 hash 与本地 base 内容 hash
+    # 注意容忍末尾换行差异（write_local 会补 \n，远端可能不带），
+    # 否则仅差一个 \n 也会被误判为"远端被修改"→ 删除回弹。
     base_content = state.load_base_content(remote_path)
     if base_content is not None:
-        base_hash = state.compute_hash(base_content)
         remote_hash = state.compute_hash(remote_content)
-        if remote_hash != base_hash:
+        if not _content_equal_ignoring_trailing_newline(remote_content,
+                                                        base_content):
             # 远端被其他设备修改了，取消删除，把远端内容拉回本地
             render_warning(
                 f"⚠ 删除冲突: {remote_path} 远端已被修改，保留远端版本并拉回本地"
