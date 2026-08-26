@@ -75,11 +75,19 @@ def start_daemon(poll_interval: Optional[int] = None) -> int:
         return 2
 
     if pid > 0:
-        # 父进程：等子进程写 PID
-        for _ in range(50):
-            if pid_file.exists():
-                break
-            time.sleep(0.1)
+        # 父进程：waitpid 等待第一次 fork 的子进程（中间进程）。
+        # 中间进程会等孙进程写完 PID 文件后才退出（退出码 0），
+        # 或超时退出（退出码 1）——消除"轮询 5 秒超时误报失败"的竞态。
+        child_ok = False
+        try:
+            _, status = os.waitpid(pid, 0)
+            child_ok = os.WIFEXITED(status) and os.WEXITSTATUS(status) == 0
+        except OSError:
+            pass
+        # 中间进程退出码 0 = 孙进程 PID 已写入；非 0 = 启动失败
+        if not child_ok:
+            render_error("守护进程启动失败")
+            return 2
         pid_val = read_pid()
         if pid_val and _is_running(pid_val):
             render_success(f"fnsswatch 守护进程已启动 (PID {pid_val})")
@@ -101,8 +109,15 @@ def start_daemon(poll_interval: Optional[int] = None) -> int:
         sys.exit(1)
 
     if pid2 > 0:
-        # 第一次 fork 的子进程退出
-        os._exit(0)
+        # 第一次 fork 的子进程（中间进程）：
+        # 等待孙进程（守护进程）写完 PID 文件后再退出。
+        # 这样父进程 waitpid(pid) 返回时 PID 文件必然已写入。
+        for _ in range(100):  # 最长等 10 秒（TF 卡慢也够）
+            if pid_file.exists():
+                os._exit(0)
+            time.sleep(0.1)
+        # 超时：孙进程启动失败，向父进程传递失败（通过退出码 + 不写 PID）
+        os._exit(1)
 
     # 第二次 fork 的子进程 = 守护进程
     # 重定向 stdin/stdout/stderr 到日志文件
